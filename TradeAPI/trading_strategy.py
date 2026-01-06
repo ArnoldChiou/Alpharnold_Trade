@@ -25,7 +25,7 @@ class TradingWorker(QObject):
             os.makedirs(STATE_FOLDER)
         
         # 使用 getattr 安全獲取 API KEY 雜湊
-        api_str = getattr(client, 'api_key', 'unknown')
+        api_str = getattr(client, 'API_KEY', 'unknown')
         api_hash = hashlib.md5(str(api_str).encode()).hexdigest()[:8]
         self.state_file = os.path.join(STATE_FOLDER, f"state_{api_hash}_{self.symbol}.json") # [修改] 檔名加入 Symbol 區分
         
