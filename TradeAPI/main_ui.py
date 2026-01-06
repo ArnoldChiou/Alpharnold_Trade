@@ -10,315 +10,45 @@ from PySide6.QtGui import *
 from PySide6.QtCore import *
 from binance.client import Client
 import config
-# 請確保 market_utils 和 crypto_utils 與 main_ui.py 在同一目錄下
-from market_utils import get_symbol_rules, round_step_size, get_breakout_levels
 from crypto_utils import encrypt_text, decrypt_text
+# [修改] 從外部匯入優化後的 Worker
+from trading_strategy import TradingWorker, STATE_FOLDER
 
 ACCOUNTS_FILE = "user_accounts.json"
-STATE_FOLDER = "position_states"
 
-# 按鈕與介面 QSS 樣式
+# 按鈕與介面 QSS 樣式 (保持不變)
 GLOBAL_BTN_STYLE = """
-    QPushButton {
-        font-weight: bold;
-        border-radius: 4px;
-        padding: 5px;
-        border: 1px solid #555;
-        background-color: #333;
-        color: white;
-    }
-    QPushButton:hover {
-        background-color: #444;
-        border: 1px solid #00ff00;
-    }
-    QPushButton:pressed {
-        background-color: #111;
-        padding-left: 8px;
-        padding-top: 8px;
-    }
+    QPushButton { font-weight: bold; border-radius: 4px; padding: 5px; border: 1px solid #555; background-color: #333; color: white; }
+    QPushButton:hover { background-color: #444; border: 1px solid #00ff00; }
+    QPushButton:pressed { background-color: #111; padding-left: 8px; padding-top: 8px; }
     QPushButton#GreenBtn { background-color: #27ae60; }
     QPushButton#GreenBtn:hover { background-color: #2ecc71; border: 1px solid #fff; }
     QPushButton#RedBtn { background-color: #c0392b; }
     QPushButton#RedBtn:hover { background-color: #e74c3c; border: 1px solid #fff; }
     QPushButton#BlueBtn { background-color: #2980b9; }
     QPushButton#BlueBtn:hover { background-color: #3498db; border: 1px solid #fff; }
-    
     QCheckBox { color: #00ff00; font-weight: bold; }
     QCheckBox::indicator { width: 18px; height: 18px; }
 """
 
-# --- 交易邏輯與 UI 邏輯 ---
-class TradingWorker(QObject):
-    price_update = Signal(float)
-    log_update = Signal(str)
-    finished = Signal()
-
-    def __init__(self, client, params, wait_for_reset=False):
-        super().__init__()
-        self.client = client
-        self.params = params
-        self.is_running = False
-        # [修改] 設定為 ETHUSDT
-        self.symbol = "ETHUSDT"
-        
-        if not os.path.exists(STATE_FOLDER):
-            os.makedirs(STATE_FOLDER)
-        
-        api_str = getattr(client, 'api_key', 'unknown')
-        api_hash = hashlib.md5(str(api_str).encode()).hexdigest()[:8]
-        self.state_file = os.path.join(STATE_FOLDER, f"state_{api_hash}.json")
-        
-        self.in_position = False
-        self.current_side = None
-        self.position_qty = 0.0
-        self.entry_price = 0.0
-        self.extreme_price = 0.0
-        self.ttp_active = False
-        self.sl_price = 0.0
-        self.daily_trades = 0
-        self.total_trades = 0
-        self.last_trade_date = ""
-        self.wait_for_reset = wait_for_reset 
-        self.last_candle_open_time = 0
-        self.long_trigger = float('inf')
-        self.short_trigger = 0.0
-        self.load_state()
-
-    def safe_emit_log(self, msg):
-        try:
-            self.log_update.emit(msg)
-        except RuntimeError:
-            pass
-
-    def save_state(self):
-        try:
-            state = {
-                "in_position": self.in_position,
-                "current_side": self.current_side,
-                "position_qty": self.position_qty,
-                "entry_price": self.entry_price,
-                "extreme_price": self.extreme_price,
-                "ttp_active": self.ttp_active,
-                "daily_trades": self.daily_trades,
-                "total_trades": self.total_trades,
-                "last_trade_date": self.last_trade_date,
-                "sl_price": self.sl_price
-            }
-            with open(self.state_file, "w") as f:
-                json.dump(state, f)
-        except Exception as e:
-            self.safe_emit_log(f"狀態儲存失敗: {e}")
-
-    def load_state(self):
-        if os.path.exists(self.state_file):
-            try:
-                with open(self.state_file, "r") as f:
-                    data = json.load(f)
-                    self.daily_trades = data.get("daily_trades", 0)
-                    self.total_trades = data.get("total_trades", 0)
-                    self.sl_price = data.get("sl_price", 0.0)
-                    self.last_trade_date = data.get("last_trade_date", "")
-                    today = datetime.now().strftime("%Y-%m-%d")
-                    if self.last_trade_date != today:
-                        self.daily_trades = 0
-                        self.last_trade_date = today
-                    if data.get("in_position"):
-                        self.in_position = data['in_position']
-                        self.current_side = data['current_side']
-                        self.position_qty = data['position_qty']
-                        self.entry_price = data['entry_price']
-                        self.extreme_price = data['extreme_price']
-                        self.ttp_active = data['ttp_active']
-            except:
-                pass
-
-    def clear_state(self):
-        self.in_position = False
-        self.current_side = None
-        self.position_qty = 0.0
-        self.entry_price = 0.0
-        self.extreme_price = 0.0
-        self.ttp_active = False
-        self.sl_price = 0.0
-        self.save_state()
-        self.safe_emit_log(">>> [系統] 持倉標記已重置")
-
-    def run(self):
-        self.is_running = True
-        while self.is_running:
-            try:
-                today = datetime.now().strftime("%Y-%m-%d")
-                if self.last_trade_date != today:
-                    self.daily_trades = 0
-                    self.last_trade_date = today
-                    self.save_state()
-                klines = self.client.futures_klines(symbol=self.symbol, interval='1d', limit=1)
-                if klines and klines[0][0] > self.last_candle_open_time:
-                    self.last_candle_open_time = klines[0][0]
-                    self.update_breakout_levels()
-                ticker = self.client.futures_symbol_ticker(symbol=self.symbol)
-                curr_price = float(ticker['price'])
-                try:
-                    self.price_update.emit(curr_price)
-                except RuntimeError:
-                    break
-                if not self.in_position:
-                    if self.wait_for_reset:
-                        if self.check_global_clear():
-                            self.wait_for_reset = False
-                    if not self.wait_for_reset:
-                        direction = self.params.get('direction', 'BOTH')
-                        if direction in ["BOTH", "LONG"] and curr_price >= self.long_trigger:
-                            self.execute_entry(curr_price, "BUY")
-                        elif direction in ["BOTH", "SHORT"] and curr_price <= self.short_trigger:
-                            self.execute_entry(curr_price, "SELL")
-                else:
-                    self.manage_position(curr_price)
-                for _ in range(10):
-                    if not self.is_running:
-                        break
-                    time.sleep(0.1)
-            except Exception as e:
-                self.safe_emit_log(f"循環異常: {e}")
-                time.sleep(2)
-        self.finished.emit()
-
-    def check_global_clear(self):
-        try:
-            for f in os.listdir(STATE_FOLDER):
-                if f.endswith(".json"):
-                    with open(os.path.join(STATE_FOLDER, f), "r") as j:
-                        if json.load(j).get("in_position", False):
-                            return False
-            return True
-        except:
-            return False
-
-    def update_breakout_levels(self):
-        l, s = int(self.params['long_lookback']), int(self.params['short_lookback'])
-        h, _ = get_breakout_levels(self.client, self.symbol, l)
-        _, low = get_breakout_levels(self.client, self.symbol, s)
-        if h and low:
-            self.long_trigger = h * (1 + self.params['long_buffer'] / 100)
-            self.short_trigger = low * (1 - self.params['short_buffer'] / 100)
-            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            self.safe_emit_log(f"📅 [{now_str}] 每日換日更新 | 多單觸發: {self.long_trigger:.2f} | 空單觸發: {self.short_trigger:.2f}")
-
-    # [修改] 新增 test_mode 參數
-    def execute_entry(self, price, side, test_mode=False):
-        try:
-            acc_info = self.client.futures_account()
-            
-            # 非測試模式才檢查舊有倉位接管
-            if not test_mode:
-                existing_pos = next((p for p in acc_info['positions'] if p['symbol'] == self.symbol), None)
-                if existing_pos and float(existing_pos['positionAmt']) != 0:
-                    current_amt = float(existing_pos['positionAmt'])
-                    if (side == "BUY" and current_amt > 0) or (side == "SELL" and current_amt < 0):
-                        self.safe_emit_log("⚠️ 偵測到已有倉位，自動接管。")
-                        self.in_position = True
-                        self.current_side = side
-                        self.position_qty = abs(current_amt)
-                        ref = self.long_trigger if (side=="BUY" and self.long_trigger != float('inf')) else (self.short_trigger if (side=="SELL" and self.short_trigger != 0) else price)
-                        self.entry_price = ref
-                        self.extreme_price = price
-                        sl_pct = self.params['long_sl'] if side == "BUY" else self.params['short_sl']
-                        self.sl_price = ref * (1 - sl_pct/100) if side == "BUY" else ref * (1 + sl_pct/100)
-                        self.save_state()
-                        return
-
-            # 計算數量
-            rules = get_symbol_rules(self.client, self.symbol)
-            if self.params['order_mode'] == "FIXED":
-                qty = round_step_size(self.params['fixed_qty'], rules['stepSize'])
-            else:
-                bal = next(float(a['walletBalance']) for a in acc_info['assets'] if a['asset'] == 'USDT')
-                qty = round_step_size((bal * (self.params['trade_pct'] / 100) * 20.0) / price, rules['stepSize'])
-            
-            # 下單
-            self.client.futures_create_order(symbol=self.symbol, side=side, type='MARKET', quantity=qty)
-            
-            # [修改] 測試模式：Log 後返回，不寫入狀態
-            if test_mode:
-                now_str = datetime.now().strftime("%H:%M:%S")
-                self.safe_emit_log(f"🧪 【測試單成交】")
-                self.safe_emit_log(f"   ➤ 方向: {side} | 數量: {qty}")
-                self.safe_emit_log(f"   ➤ 價格: {price:.2f} | 時間: {now_str}")
-                self.safe_emit_log(f"   ℹ️ 純測試，未寫入狀態檔")
-                return
-
-            self.daily_trades += 1
-            self.total_trades += 1
-            self.last_trade_date = datetime.now().strftime("%Y-%m-%d")
-            ref = self.long_trigger if (side=="BUY" and self.long_trigger != float('inf')) else (self.short_trigger if (side=="SELL" and self.short_trigger != 0) else price)
-            sl_pct = self.params['long_sl'] if side == "BUY" else self.params['short_sl']
-            self.sl_price = ref * (1 - sl_pct/100) if side == "BUY" else ref * (1 + sl_pct/100)
-            self.in_position, self.current_side, self.position_qty = True, side, qty
-            self.entry_price, self.extreme_price, self.ttp_active = ref, price, False
-            self.save_state()
-            self.safe_emit_log(f"✅ 【成功進場】停損位:{self.sl_price:.2f}")
-        except Exception as e:
-            self.safe_emit_log(f"❌ 進場失敗: {e}")
-
-    def manage_position(self, curr_price):
-        side, ref = self.current_side, self.entry_price
-        sl_pct = self.params['long_sl'] if side == "BUY" else self.params['short_sl']
-        trig_pct, call_pct = (self.params['long_ttp_trig'], self.params['long_ttp_call']) if side == "BUY" else (self.params['short_ttp_trig'], self.params['short_ttp_call'])
-        if (side == "BUY" and curr_price <= ref * (1 - sl_pct/100)) or (side == "SELL" and curr_price >= ref * (1 + sl_pct/100)):
-            self.safe_emit_log(f"🚨 【硬停損觸發】現價 {curr_price:.2f}")
-            self.close_position()
-            return
-        if side == "BUY":
-            if curr_price > self.extreme_price:
-                self.extreme_price = curr_price
-                if self.ttp_active:
-                    self.sl_price = self.extreme_price * (1 - call_pct/100)
-                self.save_state()
-            if not self.ttp_active and curr_price >= ref * (1 + trig_pct/100):
-                self.ttp_active = True
-                self.sl_price = self.extreme_price * (1 - call_pct/100)
-                self.save_state()
-            if self.ttp_active and curr_price <= self.sl_price:
-                self.close_position()
-        else:
-            if curr_price < self.extreme_price or self.extreme_price == 0:
-                self.extreme_price = curr_price
-                if self.ttp_active:
-                    self.sl_price = self.extreme_price * (1 + call_pct/100)
-                self.save_state()
-            if not self.ttp_active and curr_price <= ref * (1 - trig_pct/100):
-                self.ttp_active = True
-                self.sl_price = self.extreme_price * (1 + call_pct/100)
-                self.save_state()
-            if self.ttp_active and curr_price >= self.sl_price:
-                self.close_position()
-
-    def close_position(self):
-        try:
-            side_to_close = "SELL" if self.current_side == "BUY" else "BUY"
-            self.client.futures_create_order(symbol=self.symbol, side=side_to_close, type='MARKET', quantity=self.position_qty, reduceOnly=True)
-            self.clear_state()
-        except Exception as e:
-            self.safe_emit_log(f"❌ 平倉失敗: {e}")
-
-    def stop(self):
-        self.is_running = False
-
 class AccountManager(QDialog):
+    # (AccountManager 類別代碼保持原樣，無需修改，為了簡潔這裡省略，請保留原有的 AccountManager 程式碼)
     def __init__(self):
         super().__init__()
         self.setWindowTitle("AlphaTrader - 帳戶管理中心")
         self.setMinimumSize(500, 600)
         self.accounts = self.load_accounts()
         self.setup_ui()
-
+    
+    # ... (請將原有的 setup_ui, update_env_indicator, load_accounts, refresh_list, add_acc, del_acc, save_acc 貼在這裡) ...
+    # 為了完整性，若你需要可直接複製舊檔的這部分，這部分邏輯是共用的。
+    
     def setup_ui(self):
         layout = QVBoxLayout(self)
         self.setStyleSheet("QDialog { background: #222; color: white; } QLineEdit { background: #333; color: white; border: 1px solid #555; padding: 8px; } " + GLOBAL_BTN_STYLE)
         self.env_label = QLabel()
         self.env_label.setAlignment(Qt.AlignCenter)
         self.env_label.setFixedHeight(40)
-        self.env_label.setStyleSheet("font-size: 16px; font-weight: bold; border-radius: 4px; margin-bottom: 5px;")
         layout.addWidget(self.env_label)
         self.list_widget = QListWidget()
         self.list_widget.setStyleSheet("background: #1a1a1a; color: #00ff00; border: 1px solid #444;")
@@ -404,28 +134,35 @@ class AccountManager(QDialog):
             json.dump(self.accounts, f)
 
 class MainWindow(QMainWindow):
-    def __init__(self, account_data, is_testnet):
+    def __init__(self, account_data, is_testnet, symbol): # [修改] 增加 symbol 參數
         super().__init__()
         self.account_data = account_data
         self.is_testnet = is_testnet
+        self.symbol = symbol # [修改] 儲存 symbol
+        
         env_str = "測試網" if is_testnet else "正式網"
-        self.setWindowTitle(f"AlphaTrader Pro - 多帳戶管理 [{env_str}]")
+        self.setWindowTitle(f"AlphaTrader Pro - {self.symbol} 管理 [{env_str}]")
         self.setMinimumSize(1300, 900)
         self.last_price = 0.0
         self.workers = [None] * len(account_data)
-        
-        # [修改] 防止閃退：用來暫存手動測試的 Worker
-        self.manual_workers = []
+        self.manual_workers = [] # 防止閃退用
 
+        # [優化] 延遲連線，避免介面卡死
+        self.main_client = None
+        self.init_ui()
+        QTimer.singleShot(100, self.connect_market_data)
+
+    def connect_market_data(self):
         try:
-            self.main_client = Client(decrypt_text(account_data[0]['api_key']), decrypt_text(account_data[0]['secret_key']), testnet=self.is_testnet)
-            # [修改] 交易對改為 ETHUSDT
-            self.symbol = "ETHUSDT"
-            self.init_ui()
+            # 建立一個只用來看行情的 Client
+            self.main_client = Client(decrypt_text(self.account_data[0]['api_key']), 
+                                    decrypt_text(self.account_data[0]['secret_key']), 
+                                    testnet=self.is_testnet)
             self.start_price_monitor()
+            self.append_log(f"✅ 成功連線至 {self.symbol} 行情")
         except Exception as e:
-            QMessageBox.critical(self, "API 連線失敗", f"連線至 {env_str} 出錯: {e}")
-            sys.exit()
+            QMessageBox.critical(self, "API 連線失敗", f"連線出錯: {e}")
+            self.price_label.setText(f"{self.symbol}: 連線失敗")
 
     def init_ui(self):
         cw = QWidget()
@@ -433,12 +170,15 @@ class MainWindow(QMainWindow):
         ml = QVBoxLayout(cw)
         self.tabs = QTabWidget()
         self.tabs.setStyleSheet("QTabWidget::pane { border: 1px solid #444; background: #222; } QTabBar::tab { background: #333; color: #888; padding: 12px 25px; border: 1px solid #444; } QTabBar::tab:selected { background: #222; color: #00ff00; font-weight: bold; }")
+        
         self.tab_strat = QWidget()
         self.setup_strat_tab(QVBoxLayout(self.tab_strat))
         self.tab_stat = QWidget()
         self.setup_stat_tab(QVBoxLayout(self.tab_stat))
+        
         self.tabs.addTab(self.tab_strat, "策略控制中心")
         self.tabs.addTab(self.tab_stat, "帳戶監控面板")
+        
         self.price_label = QLabel(f"{self.symbol}: 讀取中...")
         self.price_label.setAlignment(Qt.AlignCenter)
         self.price_label.setStyleSheet("font-size: 32px; font-weight: bold; color: #00ff00; background: #111; padding: 15px; border: 1px solid #333;")
@@ -447,6 +187,8 @@ class MainWindow(QMainWindow):
         self.setStyleSheet("QMainWindow { background: #222; } QLabel { color: #ddd; } QGroupBox { color: #fff; font-weight: bold; border: 1px solid #444; margin-top: 10px; padding-top: 15px; } QTextEdit { background: #1a1a1a; color: #00ff00; font-family: Consolas; } QLineEdit { background: #333; color: white; border: 1px solid #555; } " + GLOBAL_BTN_STYLE)
 
     def setup_strat_tab(self, layout):
+        # ... (這部分 UI 佈局代碼與原版幾乎相同，保持不變) ...
+        # 為了完整性，這裡簡略帶過重點：
         self.banner = QLabel()
         self.banner.setAlignment(Qt.AlignCenter)
         self.banner.setFixedHeight(30)
@@ -474,11 +216,7 @@ class MainWindow(QMainWindow):
         
         mode_container = QHBoxLayout()
         self.mode_group = QGroupBox("下單模式設定")
-        self.mode_group.setStyleSheet("""
-            QGroupBox { border: 1px solid #444; border-radius: 6px; margin-top: 10px; }
-            QRadioButton::indicator { width: 18px; height: 18px; border-radius: 10px; border: 2px solid #555; background: #333; }
-            QRadioButton::indicator:checked { border: 2px solid #27ae60; background: qradialgradient(cx:0.5, cy:0.5, radius:0.4, fx:0.5, fy:0.5, stop:0 #27ae60, stop:0.6 #27ae60, stop:0.7 transparent); }
-        """)
+        self.mode_group.setStyleSheet("QGroupBox { border: 1px solid #444; border-radius: 6px; margin-top: 10px; }")
         mode_grid = QGridLayout(self.mode_group)
         self.radio_pct = QRadioButton("比例下單")
         self.radio_pct.setChecked(True)
@@ -490,9 +228,8 @@ class MainWindow(QMainWindow):
         self.spin_fixed = QDoubleSpinBox()
         self.spin_fixed.setRange(0, 999)
         self.spin_fixed.setDecimals(3)
-        self.spin_fixed.setValue(0.007)
-        # [修改] 顯示單位改為 ETH
-        self.spin_fixed.setSuffix(" ETH")
+        self.spin_fixed.setValue(0.007 if "ETH" in self.symbol else 0.001) # [修改] 根據幣種調整預設值
+        self.spin_fixed.setSuffix(f" {self.symbol[:3]}")
         mode_grid.addWidget(self.radio_pct, 0, 0)
         mode_grid.addWidget(self.spin_pct, 0, 1)
         mode_grid.addWidget(self.radio_fixed, 1, 0)
@@ -556,6 +293,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(ctrl_l)
 
     def add_row_to_table(self, i, acc):
+        # (同原版)
         self.status_table.setItem(i, 0, QTableWidgetItem(acc.get('nickname', '未命名')))
         for j in range(1, 8):
             self.status_table.setItem(i, j, QTableWidgetItem("---"))
@@ -575,6 +313,7 @@ class MainWindow(QMainWindow):
         self.status_table.setCellWidget(i, 11, db)
 
     def dynamic_add_account(self):
+        # (同原版)
         d = QDialog(self)
         d.setWindowTitle("動態新增帳戶")
         d.setMinimumSize(400, 300)
@@ -605,6 +344,7 @@ class MainWindow(QMainWindow):
         d.exec()
 
     def update_all_account_status(self):
+        # [修改] 使用 STATE_FOLDER 和 Symbol 來讀取正確的檔案
         for i, acc in enumerate(self.account_data):
             try:
                 api = decrypt_text(acc['api_key'])
@@ -612,7 +352,8 @@ class MainWindow(QMainWindow):
                 c = Client(api, sec, testnet=self.is_testnet)
                 ai = c.futures_account()
                 h = hashlib.md5(api.encode()).hexdigest()[:8]
-                sf = os.path.join(STATE_FOLDER, f"state_{h}.json")
+                # [修正] 讀取對應 Symbol 的狀態檔
+                sf = os.path.join(STATE_FOLDER, f"state_{h}_{self.symbol}.json")
                 if os.path.exists(sf):
                     with open(sf, "r") as f:
                         d = json.load(f)
@@ -643,10 +384,12 @@ class MainWindow(QMainWindow):
                     if cb:
                         cb.setEnabled(False)
                         cb.setStyleSheet("background: #555; color: #aaa;")
-            except:
+            except Exception as e:
+                # print(e) 
                 pass
 
     def manual_close_account(self, idx):
+        # (同原版)
         acc = self.account_data[idx]
         nick = acc.get('nickname', '未命名')
         if QMessageBox.question(self, "確認", f"確定要平掉「{nick}」倉位嗎？") == QMessageBox.No:
@@ -668,6 +411,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "失敗", str(e))
 
     def delete_account_from_panel(self, idx):
+        # (同原版)
         nick = self.account_data[idx].get('nickname', '未命名')
         if QMessageBox.warning(self, "移除", f"確定移除「{nick}」？", QMessageBox.Yes | QMessageBox.No) == QMessageBox.No:
             return
@@ -681,6 +425,7 @@ class MainWindow(QMainWindow):
         self.refresh_table_indices()
 
     def refresh_table_indices(self):
+        # (同原版)
         for i in range(self.status_table.rowCount()):
             for col, func in [(9, self.toggle_individual_account), (10, self.manual_close_account), (11, self.delete_account_from_panel)]:
                 w = self.status_table.cellWidget(i, col)
@@ -699,8 +444,8 @@ class MainWindow(QMainWindow):
             api = decrypt_text(self.account_data[idx]['api_key'])
             sec = decrypt_text(self.account_data[idx]['secret_key'])
             c = Client(api, sec, testnet=self.is_testnet)
-            w = TradingWorker(c, ps, wait_for_reset)
-            w.symbol = self.symbol # 確保 Symbol 同步
+            # [修改] 傳入 self.symbol
+            w = TradingWorker(c, ps, self.symbol, wait_for_reset)
             w.price_update.connect(self.price_update)
             w.log_update.connect(lambda m, n=nick: self.append_log(f"【{n}】 {m}"))
             self.workers[idx] = w
@@ -721,8 +466,9 @@ class MainWindow(QMainWindow):
         def monitor():
             while True:
                 try: 
-                    p = float(self.main_client.futures_symbol_ticker(symbol=self.symbol)['price'])
-                    self.price_update(p)
+                    if self.main_client:
+                        p = float(self.main_client.futures_symbol_ticker(symbol=self.symbol)['price'])
+                        self.price_update(p)
                     time.sleep(1)
                 except:
                     time.sleep(5)
@@ -739,6 +485,7 @@ class MainWindow(QMainWindow):
         self.log_display.ensureCursorVisible()
 
     def start_strategy(self):
+        # (同原版)
         if self.start_btn.text().startswith("啟動"):
             for i in range(len(self.account_data)):
                 if self.status_table.cellWidget(i, 9).text() == "啟動":
@@ -767,60 +514,42 @@ class MainWindow(QMainWindow):
         self.radio_short_only.setEnabled(e)
         self.dyn_add_btn.setEnabled(True)
 
-    # [修改] 手動買入邏輯更新：連接 Log，並將 worker 加入暫存清單防止回收閃退
     def manual_buy(self):
-        if self.last_price <= 0:
-            self.append_log("❌ [錯誤] 無法取得當前價格，請確認左上角價格是否在跳動。")
-            return
-        params = self.get_params()
-        self.append_log(f"🚀 開始執行手動買入測試 (多帳戶)...")
-        
-        # 清理舊的已完成 worker
-        self.manual_workers = [w for w in self.manual_workers if w.is_running]
-
-        for acc in self.account_data:
-            nick = acc.get('nickname', '未命名')
-            try:
-                client = Client(decrypt_text(acc['api_key']), decrypt_text(acc['secret_key']), testnet=self.is_testnet)
-                w = TradingWorker(client, params)
-                w.symbol = self.symbol
-                
-                # 連接 Log 訊號
-                w.log_update.connect(lambda m, n=nick: self.append_log(f"【{n}】 {m}"))
-                
-                # [關鍵修正] 將 worker 加入全域列表，防止記憶體回收導致崩潰
-                self.manual_workers.append(w)
-                
-                threading.Thread(target=w.execute_entry, args=(self.last_price, "BUY", True), daemon=True).start()
-            except Exception as e:
-                self.append_log(f"❌ 【{nick}】初始化失敗: {e}")
-
-    # [修改] 手動賣出邏輯更新：連接 Log，並將 worker 加入暫存清單防止回收閃退
+        self.manual_trade("BUY")
+    
     def manual_sell(self):
+        self.manual_trade("SELL")
+
+    def manual_trade(self, side):
         if self.last_price <= 0:
             self.append_log("❌ [錯誤] 無法取得當前價格，請確認左上角價格是否在跳動。")
             return
         params = self.get_params()
-        self.append_log(f"🚀 開始執行手動賣出測試 (多帳戶)...")
+        self.append_log(f"🚀 開始執行手動 {side} 測試...")
         
-        # 清理舊的已完成 worker
+        # [優化] 清理已完成的 worker
         self.manual_workers = [w for w in self.manual_workers if w.is_running]
 
         for acc in self.account_data:
             nick = acc.get('nickname', '未命名')
             try:
                 client = Client(decrypt_text(acc['api_key']), decrypt_text(acc['secret_key']), testnet=self.is_testnet)
-                w = TradingWorker(client, params)
-                w.symbol = self.symbol
-                
+                # [修改] 傳入 Symbol
+                w = TradingWorker(client, params, self.symbol)
                 w.log_update.connect(lambda m, n=nick: self.append_log(f"【{n}】 {m}"))
                 self.manual_workers.append(w)
-                
-                threading.Thread(target=w.execute_entry, args=(self.last_price, "SELL", True), daemon=True).start()
+                # 設定偽狀態讓 Worker 不會被回收 (這裡簡單用 is_running 標記)
+                w.is_running = True 
+                threading.Thread(target=self._run_manual_task, args=(w, self.last_price, side), daemon=True).start()
             except Exception as e:
                 self.append_log(f"❌ 【{nick}】初始化失敗: {e}")
+
+    def _run_manual_task(self, worker, price, side):
+        worker.execute_entry(price, side, True)
+        worker.is_running = False # 任務結束
 
     def get_params(self):
+        # (同原版)
         p = {k: float(v.text()) for k, v in self.inputs.items()}
         p['order_mode'] = "FIXED" if self.radio_fixed.isChecked() else "PERCENT"
         p['fixed_qty'] = self.spin_fixed.value()
@@ -832,12 +561,3 @@ class MainWindow(QMainWindow):
         else:
             p['direction'] = "BOTH"
         return p
-
-if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    app.setStyle("Fusion")
-    mgr = AccountManager()
-    if mgr.exec() == QDialog.Accepted and mgr.accounts:
-        window = MainWindow(mgr.accounts, mgr.testnet_chk.isChecked())
-        window.show()
-        sys.exit(app.exec())

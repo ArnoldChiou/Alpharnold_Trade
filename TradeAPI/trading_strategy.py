@@ -13,12 +13,12 @@ class TradingWorker(QObject):
     log_update = Signal(str)
     finished = Signal()
 
-    def __init__(self, client, params, wait_for_reset=False):
+    def __init__(self, client, params, symbol, wait_for_reset=False):
         super().__init__()
         self.client = client
         self.params = params
+        self.symbol = symbol  # [修改] 接收外部傳入的 Symbol
         self.is_running = False
-        self.symbol = "BTCUSDT"
         
         if not os.path.exists(STATE_FOLDER):
             os.makedirs(STATE_FOLDER)
@@ -26,7 +26,7 @@ class TradingWorker(QObject):
         # 使用 getattr 安全獲取 API KEY 雜湊
         api_str = getattr(client, 'api_key', 'unknown')
         api_hash = hashlib.md5(str(api_str).encode()).hexdigest()[:8]
-        self.state_file = os.path.join(STATE_FOLDER, f"state_{api_hash}.json")
+        self.state_file = os.path.join(STATE_FOLDER, f"state_{api_hash}_{self.symbol}.json") # [修改] 檔名加入 Symbol 區分
         
         self.in_position = False
         self.current_side = None
@@ -43,7 +43,23 @@ class TradingWorker(QObject):
         self.long_trigger = float('inf')
         self.short_trigger = 0.0
         
+        # [優化] 初始化時快取交易規則，避免下單時卡頓
+        self.symbol_rules = None 
+        self.last_kline_check = 0 # [優化] 限制 K 線檢查頻率
+        
         self.load_state()
+        self.init_rules()
+
+    def init_rules(self):
+        """[優化] 預先獲取並快取交易規則"""
+        try:
+            self.symbol_rules = get_symbol_rules(self.client, self.symbol)
+            if self.symbol_rules:
+                self.safe_emit_log(f"✅ 交易規則已快取: 最小數量 {self.symbol_rules['minQty']}")
+            else:
+                self.safe_emit_log("⚠️ 無法獲取交易規則，將於下單時重試")
+        except Exception as e:
+            self.safe_emit_log(f"⚠️ 初始化規則失敗: {e}")
 
     def safe_emit_log(self, msg):
         try:
@@ -116,11 +132,16 @@ class TradingWorker(QObject):
                     self.last_trade_date = today
                     self.save_state()
 
-                klines = self.client.futures_klines(symbol=self.symbol, interval='1d', limit=1)
-                if klines and klines[0][0] > self.last_candle_open_time:
-                    self.last_candle_open_time = klines[0][0]
-                    self.update_breakout_levels()
+                # [優化] 減少 K 線請求頻率，每 60 秒檢查一次即可
+                now_ts = time.time()
+                if now_ts - self.last_kline_check > 60:
+                    klines = self.client.futures_klines(symbol=self.symbol, interval='1d', limit=1)
+                    if klines and klines[0][0] > self.last_candle_open_time:
+                        self.last_candle_open_time = klines[0][0]
+                        self.update_breakout_levels()
+                    self.last_kline_check = now_ts
                 
+                # 獲取價格
                 ticker = self.client.futures_symbol_ticker(symbol=self.symbol)
                 curr_price = float(ticker['price'])
                 try:
@@ -134,16 +155,21 @@ class TradingWorker(QObject):
                             self.wait_for_reset = False
                     
                     if not self.wait_for_reset:
+                        direction = self.params.get('direction', 'BOTH')
                         # 0.01% 的極小容許範圍判斷進場
                         tolerance = 0.0001 
-                        if self.long_trigger <= curr_price <= (self.long_trigger * (1 + tolerance)):
+                        
+                        can_long = direction in ["BOTH", "LONG"]
+                        can_short = direction in ["BOTH", "SHORT"]
+                        
+                        if can_long and (self.long_trigger <= curr_price <= (self.long_trigger * (1 + tolerance))):
                             self.execute_entry(curr_price, "BUY")
-                        elif (self.short_trigger * (1 - tolerance)) <= curr_price <= self.short_trigger:
+                        elif can_short and ((self.short_trigger * (1 - tolerance)) <= curr_price <= self.short_trigger):
                             self.execute_entry(curr_price, "SELL")
                 else:
                     self.manage_position(curr_price)
                 
-                for _ in range(10):
+                for _ in range(10): # 1秒的 sleep 分割成 10 次，提高響應速度
                     if not self.is_running:
                         break
                     time.sleep(0.1)
@@ -155,7 +181,7 @@ class TradingWorker(QObject):
     def check_global_clear(self):
         try:
             for f in os.listdir(STATE_FOLDER):
-                if f.endswith(".json"):
+                if f.endswith(f"_{self.symbol}.json"): # 只檢查當前幣種
                     with open(os.path.join(STATE_FOLDER, f), "r") as j:
                         if json.load(j).get("in_position", False):
                             return False
@@ -170,37 +196,54 @@ class TradingWorker(QObject):
         if h and low:
             self.long_trigger = h * (1 + self.params['long_buffer'] / 100)
             self.short_trigger = low * (1 - self.params['short_buffer'] / 100)
-            # --- 修改重點：加入精確的日期時間戳記 ---
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             self.safe_emit_log(f"📅 [{now_str}] 每日換日更新 | 多單觸發: {self.long_trigger:.2f} | 空單觸發: {self.short_trigger:.2f}")
 
-    def execute_entry(self, price, side):
+    def execute_entry(self, price, side, test_mode=False):
         try:
             acc_info = self.client.futures_account()
-            existing_pos = next((p for p in acc_info['positions'] if p['symbol'] == self.symbol), None)
-            if existing_pos and float(existing_pos['positionAmt']) != 0:
-                current_amt = float(existing_pos['positionAmt'])
-                if (side == "BUY" and current_amt > 0) or (side == "SELL" and current_amt < 0):
-                    self.safe_emit_log("⚠️ 偵測到已有倉位，自動接管。")
-                    self.in_position = True
-                    self.current_side = side
-                    self.position_qty = abs(current_amt)
-                    ref = self.long_trigger if (side=="BUY" and self.long_trigger != float('inf')) else (self.short_trigger if (side=="SELL" and self.short_trigger != 0) else price)
-                    self.entry_price = ref
-                    self.extreme_price = price
-                    sl_pct = self.params['long_sl'] if side == "BUY" else self.params['short_sl']
-                    self.sl_price = ref * (1 - sl_pct/100) if side == "BUY" else ref * (1 + sl_pct/100)
-                    self.save_state()
-                    return
+            
+            # 非測試模式才檢查舊有倉位接管
+            if not test_mode:
+                existing_pos = next((p for p in acc_info['positions'] if p['symbol'] == self.symbol), None)
+                if existing_pos and float(existing_pos['positionAmt']) != 0:
+                    current_amt = float(existing_pos['positionAmt'])
+                    if (side == "BUY" and current_amt > 0) or (side == "SELL" and current_amt < 0):
+                        self.safe_emit_log("⚠️ 偵測到已有倉位，自動接管。")
+                        self.in_position = True
+                        self.current_side = side
+                        self.position_qty = abs(current_amt)
+                        ref = self.long_trigger if (side=="BUY" and self.long_trigger != float('inf')) else (self.short_trigger if (side=="SELL" and self.short_trigger != 0) else price)
+                        self.entry_price = ref
+                        self.extreme_price = price
+                        sl_pct = self.params['long_sl'] if side == "BUY" else self.params['short_sl']
+                        self.sl_price = ref * (1 - sl_pct/100) if side == "BUY" else ref * (1 + sl_pct/100)
+                        self.save_state()
+                        return
 
-            rules = get_symbol_rules(self.client, self.symbol)
+            # [優化] 使用快取的規則
+            rules = self.symbol_rules
+            if not rules:
+                rules = get_symbol_rules(self.client, self.symbol)
+            
+            if not rules:
+                 self.safe_emit_log(f"❌ 無法獲取交易規則，取消下單")
+                 return
+
             if self.params['order_mode'] == "FIXED":
                 qty = round_step_size(self.params['fixed_qty'], rules['stepSize'])
             else:
                 bal = next(float(a['walletBalance']) for a in acc_info['assets'] if a['asset'] == 'USDT')
                 qty = round_step_size((bal * (self.params['trade_pct'] / 100) * 20.0) / price, rules['stepSize'])
             
+            # 下單
             self.client.futures_create_order(symbol=self.symbol, side=side, type='MARKET', quantity=qty)
+            
+            if test_mode:
+                now_str = datetime.now().strftime("%H:%M:%S")
+                self.safe_emit_log(f"🧪 【測試單成交】 {side} {qty} @ {price:.2f} (未寫入狀態)")
+                return
+
             self.daily_trades += 1
             self.total_trades += 1
             self.last_trade_date = datetime.now().strftime("%Y-%m-%d")
