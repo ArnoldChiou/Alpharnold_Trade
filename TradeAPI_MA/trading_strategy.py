@@ -15,14 +15,13 @@ class TradingWorker(QObject):
         self.client = client
         self.params = params
         self.symbol = symbol
-        self.strategy_name = strategy_name # 這裡定義策略名稱
+        self.strategy_name = strategy_name 
         self.is_running = False
         self.curr_price = 0.0
-        self.wait_for_reset = wait_for_reset  # [新增] 存儲等待重置標記
+        self.wait_for_reset = wait_for_reset
         
         api_str = getattr(client, 'API_KEY', 'unknown')
         api_hash = hashlib.md5(str(api_str).encode()).hexdigest()[:8]
-        # 狀態檔名加入策略名稱，避免互相覆蓋
         self.state_file = os.path.join(STATE_FOLDER, f"state_{api_hash}_{self.symbol}_{self.strategy_name}.json")
         
         self.in_position = False
@@ -35,12 +34,17 @@ class TradingWorker(QObject):
         self.next_rollover_ms = 0
         self.long_trigger = float('inf')
         self.short_trigger = 0.0
+
+        # --- [新增] 與 BT 版本一致的統計變數 ---
+        self.daily_trades = 0
+        self.total_trades = 0
+        self.last_trade_date = ""
         
         if not os.path.exists(STATE_FOLDER): os.makedirs(STATE_FOLDER)
         self.load_state()
+        self.save_state()  # [新增] 啟動時立即產生檔案
 
     def check_global_clear(self):
-        # 這裡直接檢查 self.state_file 即可實現「MA 不重複進場，但 BT 進場不影響 MA」
         if os.path.exists(self.state_file):
             try:
                 with open(self.state_file, "r") as f:
@@ -64,12 +68,31 @@ class TradingWorker(QObject):
         self.is_running = True
         while self.is_running:
             try:
+                # --- [新增] 換日檢查邏輯 (與 BT 一致) ---
+                today = datetime.now().strftime("%Y-%m-%d")
+                if self.last_trade_date != today:
+                    self.last_trade_date = today
+                    self.daily_trades = 0
+                    self.save_state()
+
                 now_ms = int(time.time() * 1000)
-                if self.next_rollover_ms == 0 or now_ms >= self.next_rollover_ms:
+                # [修改] 仿照 BT 版本，加入啟動時的系統通知
+                if self.next_rollover_ms == 0:
                     klines = self.client.futures_klines(symbol=self.symbol, interval='1d', limit=1)
                     if klines:
                         self.update_strategy_levels()
                         self.next_rollover_ms = klines[0][6] + 1
+                        # 加入這行來發送「策略已啟動」日誌
+                        target_time = datetime.fromtimestamp(self.next_rollover_ms/1000).strftime('%Y-%m-%d %H:%M:%S')
+                        self.safe_emit_log(f"🚀 [系統] 策略已啟動，目標換日時間: {target_time}")
+                
+                # 如果是換日輪詢觸發
+                elif now_ms >= self.next_rollover_ms:
+                    klines = self.client.futures_klines(symbol=self.symbol, interval='1d', limit=1)
+                    if klines:
+                        self.update_strategy_levels()
+                        self.next_rollover_ms = klines[0][6] + 1
+                        self.safe_emit_log(f"⏰ [系統] 偵測到換日成功，已重新計算策略邊界 ({self.symbol})")
                 
                 curr_price = self.curr_price
                 if curr_price <= 0:
@@ -78,13 +101,11 @@ class TradingWorker(QObject):
                 self.price_update.emit(curr_price)
 
                 if not self.in_position:
-                    # [新增] wait_for_reset 邏輯
                     if self.wait_for_reset:
                         if self.check_global_clear():
                             self.wait_for_reset = False
                             self.safe_emit_log(f"🔄 [{self.symbol}] 偵測到環境已清空，解除等待，恢復監控")
                     
-                    # 只有在不需要等待時才檢查進場訊號
                     if not self.wait_for_reset:
                         direction = self.params.get('direction', 'BOTH')
                         if direction in ["BOTH", "LONG"] and curr_price >= self.long_trigger:
@@ -99,7 +120,6 @@ class TradingWorker(QObject):
 
     def execute_entry(self, price, side):
         try:
-            # 直接下單，不進行現有倉位接管檢查，以實現策略獨立
             rules = get_symbol_rules(self.client, self.symbol)
             if not rules: return
             
@@ -112,6 +132,11 @@ class TradingWorker(QObject):
             
             self.client.futures_create_order(symbol=self.symbol, side=side, type='MARKET', quantity=qty)
             
+            # --- [新增] 更新交易次數統計 ---
+            self.daily_trades += 1
+            self.total_trades += 1
+            self.last_trade_date = datetime.now().strftime("%Y-%m-%d")
+
             self.in_position, self.current_side, self.position_qty = True, side, qty
             self.entry_price, self.extreme_price = price, price
             sl_pct = self.params['long_sl'] if side == "BUY" else self.params['short_sl']
@@ -161,7 +186,19 @@ class TradingWorker(QObject):
             self.safe_emit_log(f"❌ 平倉失敗: {e}")
 
     def save_state(self):
-        state = {"in_position": self.in_position, "current_side": self.current_side, "position_qty": self.position_qty, "entry_price": self.entry_price, "extreme_price": self.extreme_price, "ttp_active": self.ttp_active, "sl_price": self.sl_price}
+        # --- [修改] 加入統計變數至存檔 ---
+        state = {
+            "in_position": self.in_position, 
+            "current_side": self.current_side, 
+            "position_qty": self.position_qty, 
+            "entry_price": self.entry_price, 
+            "extreme_price": self.extreme_price, 
+            "ttp_active": self.ttp_active, 
+            "sl_price": self.sl_price,
+            "daily_trades": self.daily_trades,
+            "total_trades": self.total_trades,
+            "last_trade_date": self.last_trade_date
+        }
         with open(self.state_file, "w") as f: json.dump(state, f)
 
     def load_state(self):
@@ -169,6 +206,16 @@ class TradingWorker(QObject):
             try:
                 with open(self.state_file, "r") as f:
                     d = json.load(f)
+                    # --- [新增] 讀取統計數據與換日判定 ---
+                    self.daily_trades = d.get("daily_trades", 0)
+                    self.total_trades = d.get("total_trades", 0)
+                    self.last_trade_date = d.get("last_trade_date", "")
+                    
+                    today = datetime.now().strftime("%Y-%m-%d")
+                    if self.last_trade_date != today:
+                        self.daily_trades = 0
+                        self.last_trade_date = today
+
                     self.in_position = d.get("in_position", False)
                     self.current_side = d.get("current_side")
                     self.position_qty = d.get("position_qty", 0.0)

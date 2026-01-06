@@ -642,19 +642,23 @@ class MainWindow(QMainWindow):
                 self.status_table.setRowHidden(i, True)
 
     def append_filtered_log(self, nick, symbol, msg):
-        # 定義哪些屬於「全域重複性質」的關鍵字
-        shared_keywords = ["每日換日更新", "策略已啟動", "偵測到換日成功", "交易規則已快取"]
+        # 1. 在關鍵字清單中加入 "MA"
+        shared_keywords = ["每日換日更新", "策略已啟動", "偵測到換日成功", "交易規則已快取", "MA"]
+        
         is_shared = any(k in msg for k in shared_keywords)
         if is_shared:
-            # 建立唯一 Key（幣種 + 訊息前段），10 秒內重複的訊息只會顯示一次
+            # 2. 建立唯一 Key（這裡會用 symbol + 訊息前段來判斷重複）
+            # 例如 "BTCUSDT_⏰ MA(6)更新"
             cache_key = f"{symbol}_{msg[:15]}"
             now = time.time()
+            
+            # 如果 10 秒內已經顯示過同樣幣種的 MA 更新，就不再顯示
             if now - self._shared_log_cache.get(cache_key, 0) > 10:
                 self._shared_log_cache[cache_key] = now
-                # 以 [系統-幣種] 形式顯示，不帶特定帳號暱稱
+                # 以 [系統-幣種] 形式顯示
                 self.append_log(f"📢 [系統-{symbol}] {msg}")
         else:
-            # 一般帳號訊息（如進出場、報錯）照常顯示
+            # 一般帳號進出場訊息才帶暱稱
             self.append_log(f"【{nick}】 {msg}")
 
     
