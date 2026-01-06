@@ -4,14 +4,11 @@ import math
 def get_ma_level(client, symbol, window):
     """獲取前 W 天的收盤價均線 (不含當前未收盤的 K 線)"""
     try:
-        # 抓取 window + 1 根日 K，最後一根為今天（未完成），故排除
         klines = client.futures_klines(symbol=symbol, interval='1d', limit=window + 1)
         if len(klines) < window + 1:
             return None
-            
-        closed_klines = klines[:-1] # 只取已收盤的天數
+        closed_klines = klines[:-1]
         closes = [float(k[4]) for k in closed_klines] 
-        
         return sum(closes) / len(closes)
     except Exception as e:
         print(f"獲取 MA 失敗: {e}")

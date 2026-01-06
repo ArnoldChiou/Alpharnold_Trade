@@ -507,14 +507,11 @@ class MainWindow(QMainWindow):
     def toggle_individual_account(self, idx, wait_for_reset=False):
         btn = self.status_table.cellWidget(idx, 9)
         nick = self.account_data[idx].get('nickname', '未命名')
-        
-        # [核心修改] 讀取該帳戶的專屬設定
         acc_config = self.account_data[idx].get('config', {})
         target_symbol = acc_config.get('symbol', 'BTCUSDT')
         target_direction = acc_config.get('direction', 'BOTH')
         
         ps = self.get_params()
-        # [覆寫] 強制使用帳戶設定的方向
         ps['direction'] = target_direction
         
         if btn.text() == "啟動":
@@ -522,25 +519,23 @@ class MainWindow(QMainWindow):
             sec = decrypt_text(self.account_data[idx]['secret_key'])
             c = Client(api, sec, testnet=self.is_testnet)
             
-            # [傳遞] 將 symbol 傳給 Worker
-            w = TradingWorker(c, ps, target_symbol, wait_for_reset)
-            w.price_update.connect(lambda p, s=target_symbol: self.update_price_cache(s, p)) # 用於更新快取
+            # [修正關鍵] 加入 "MA" 作為第四個參數 (strategy_name)
+            w = TradingWorker(c, ps, target_symbol, "MA", wait_for_reset) 
+            
+            w.price_update.connect(lambda p, s=target_symbol: self.update_price_cache(s, p))
             w.log_update.connect(lambda m, n=nick, s=target_symbol: self.append_filtered_log(n, s, m))
             
             self.workers[idx] = w
             threading.Thread(target=w.run, daemon=True).start()
             
-            self.status_table.setItem(idx, 8, QTableWidgetItem("⚡ 運行" if not wait_for_reset else "⏳ 等待同步"))
+            self.status_table.setItem(idx, 8, QTableWidgetItem("⚡ 運行"))
             btn.setText("停止")
             btn.setObjectName("RedBtn")
-            btn.setStyle(btn.style())
         else:
-            if self.workers[idx]:
-                self.workers[idx].stop()
-            self.status_table.setItem(idx, 8, QTableWidgetItem("⏹️ 停止"))
+            if self.workers[idx]: self.workers[idx].stop()
             btn.setText("啟動")
             btn.setObjectName("GreenBtn")
-            btn.setStyle(btn.style())
+        btn.setStyle(btn.style())
 
     def update_price_cache(self, symbol, price):
         self.prices[symbol] = price
