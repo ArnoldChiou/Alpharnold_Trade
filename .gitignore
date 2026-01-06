@@ -11,3 +11,6 @@ position_states
 user_accounts.json
 secret.key
 __pycache__/
+build
+dist
+*.spec
