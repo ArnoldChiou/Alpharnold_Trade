@@ -416,7 +416,7 @@ class MainWindow(QMainWindow):
                 h = hashlib.md5(api.encode()).hexdigest()[:8]
                 
                 # [修正] 讀取對應 Symbol 的狀態檔
-                sf = os.path.join(STATE_FOLDER, f"state_{h}_{symbol}.json")
+                sf = os.path.join(STATE_FOLDER, f"state_{h}_{symbol}_BT.json")
                 if os.path.exists(sf):
                     with open(sf, "r") as f:
                         d = json.load(f)
@@ -521,7 +521,7 @@ class MainWindow(QMainWindow):
             c = Client(api, sec, testnet=self.is_testnet)
             
             # [傳遞] 將 symbol 傳給 Worker
-            w = TradingWorker(c, ps, target_symbol, wait_for_reset)
+            w = TradingWorker(c, ps, target_symbol, "BT", wait_for_reset)
             w.price_update.connect(lambda p, s=target_symbol: self.update_price_cache(s, p)) # 用於更新快取
             w.log_update.connect(lambda m, n=nick, s=target_symbol: self.append_filtered_log(n, s, m))
             
@@ -602,7 +602,7 @@ class MainWindow(QMainWindow):
             try:
                 client = Client(decrypt_text(acc['api_key']), decrypt_text(acc['secret_key']), testnet=self.is_testnet)
                 # [修正] 傳入正確的 Symbol
-                w = TradingWorker(client, params, symbol)
+                w = TradingWorker(client, params, symbol, "BT_MANUAL")
                 w.log_update.connect(lambda m, n=nick: self.append_log(f"【{n}】 {m}"))
                 self.manual_workers.append(w)
                 

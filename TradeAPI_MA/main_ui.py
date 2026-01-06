@@ -418,7 +418,7 @@ class MainWindow(QMainWindow):
                 h = hashlib.md5(api.encode()).hexdigest()[:8]
                 
                 # [修正] 讀取對應 Symbol 的狀態檔
-                sf = os.path.join(STATE_FOLDER, f"state_{h}_{symbol}.json")
+                sf = os.path.join(STATE_FOLDER, f"state_{h}_{symbol}_MA.json")
                 if os.path.exists(sf):
                     with open(sf, "r") as f:
                         d = json.load(f)
@@ -520,7 +520,7 @@ class MainWindow(QMainWindow):
             c = Client(api, sec, testnet=self.is_testnet)
             
             # [修正關鍵] 加入 "MA" 作為第四個參數 (strategy_name)
-            w = TradingWorker(c, ps, target_symbol, "MA", wait_for_reset) 
+            w = TradingWorker(c, ps, target_symbol, "MA", wait_for_reset)
             
             w.price_update.connect(lambda p, s=target_symbol: self.update_price_cache(s, p))
             w.log_update.connect(lambda m, n=nick, s=target_symbol: self.append_filtered_log(n, s, m))

@@ -13,13 +13,14 @@ class TradingWorker(QObject):
     log_update = Signal(str)
     finished = Signal()
 
-    def __init__(self, client, params, symbol, wait_for_reset=False):
+    def __init__(self, client, params, symbol, strategy_name="BT", wait_for_reset=False):
         super().__init__()
         self.client = client
         self.params = params
-        self.symbol = symbol  # [修改] 接收外部傳入的 Symbol
+        self.symbol = symbol
+        self.strategy_name = strategy_name # 儲存策略名稱
         self.is_running = False
-        self.curr_price = 0.0  # [新增] 用於接收外部（如 WebSocket）傳入的價格
+        self.curr_price = 0.0
         
         if not os.path.exists(STATE_FOLDER):
             os.makedirs(STATE_FOLDER)
@@ -27,7 +28,8 @@ class TradingWorker(QObject):
         # 使用 getattr 安全獲取 API KEY 雜湊
         api_str = getattr(client, 'API_KEY', 'unknown')
         api_hash = hashlib.md5(str(api_str).encode()).hexdigest()[:8]
-        self.state_file = os.path.join(STATE_FOLDER, f"state_{api_hash}_{self.symbol}.json") # [修改] 檔名加入 Symbol 區分
+        # [修改] 狀態檔名加入 strategy_name 以區分策略
+        self.state_file = os.path.join(STATE_FOLDER, f"state_{api_hash}_{self.symbol}_{self.strategy_name}.json")
         
         self.in_position = False
         self.current_side = None
@@ -205,15 +207,11 @@ class TradingWorker(QObject):
         self.finished.emit()
 
     def check_global_clear(self):
-        try:
-            for f in os.listdir(STATE_FOLDER):
-                if f.endswith(f"_{self.symbol}.json"): # 只檢查當前幣種
-                    with open(os.path.join(STATE_FOLDER, f), "r") as j:
-                        if json.load(j).get("in_position", False):
-                            return False
-            return True
-        except:
-            return False
+        """[修改] 只檢查自己的策略是否清空，不影響 MA 策略進場"""
+        if os.path.exists(self.state_file):
+            with open(self.state_file, "r") as j:
+                return not json.load(j).get("in_position", False)
+        return True
 
     def update_breakout_levels(self):
         l, s = int(self.params['long_lookback']), int(self.params['short_lookback'])
@@ -248,9 +246,8 @@ class TradingWorker(QObject):
                         return
 
             # [優化] 使用快取的規則
-            rules = self.symbol_rules
-            if not rules:
-                rules = get_symbol_rules(self.client, self.symbol)
+            rules = self.symbol_rules or get_symbol_rules(self.client, self.symbol)
+            if not rules: return
             
             if not rules:
                  self.safe_emit_log(f"❌ 無法獲取交易規則，取消下單")
@@ -262,7 +259,7 @@ class TradingWorker(QObject):
                 bal = next(float(a['walletBalance']) for a in acc_info['assets'] if a['asset'] == 'USDT')
                 qty = round_step_size((bal * (self.params['trade_pct'] / 100) * 20.0) / price, rules['stepSize'])
             
-            # 下單
+            # 下單 (這會增加場上的總部位，例如 MA 0.002 + BT 0.002 = 0.004)
             self.client.futures_create_order(symbol=self.symbol, side=side, type='MARKET', quantity=qty)
             
             if test_mode:

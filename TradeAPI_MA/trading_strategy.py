@@ -40,18 +40,13 @@ class TradingWorker(QObject):
         self.load_state()
 
     def check_global_clear(self):
-        """[新增] 檢查該幣種在所有策略/帳號中是否都沒有持倉"""
-        try:
-            for f in os.listdir(STATE_FOLDER):
-                # 檢查檔名是否包含當前幣種 (例如: _BTCUSDT_)
-                if f.endswith(".json") and f"_{self.symbol}_" in f:
-                    with open(os.path.join(STATE_FOLDER, f), "r") as j:
-                        if json.load(j).get("in_position", False):
-                            return False
-            return True
-        except Exception as e:
-            self.safe_emit_log(f"檢查全域狀態失敗: {e}")
-            return False
+        # 這裡直接檢查 self.state_file 即可實現「MA 不重複進場，但 BT 進場不影響 MA」
+        if os.path.exists(self.state_file):
+            try:
+                with open(self.state_file, "r") as f:
+                    return not json.load(f).get("in_position", False)
+            except: return True
+        return True
 
     def safe_emit_log(self, msg):
         try: self.log_update.emit(msg)
