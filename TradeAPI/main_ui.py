@@ -12,6 +12,7 @@ from binance.client import Client
 import config
 from crypto_utils import encrypt_text, decrypt_text
 from trading_strategy import TradingWorker, STATE_FOLDER
+from market_stream import MarketStream
 
 ACCOUNTS_FILE = "user_accounts.json"
 
@@ -173,6 +174,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.account_data = account_data
         self.is_testnet = is_testnet
+        self.market_stream = None
         
         # [修改] 不再有單一的 self.symbol，而是收集所有帳戶用到的幣種
         self.active_symbols = set()
@@ -198,18 +200,16 @@ class MainWindow(QMainWindow):
 
     def connect_market_data(self):
         try:
-            # 建立一個只用來看行情的 Client (使用第一個帳戶的 API)
             if self.account_data:
-                self.main_client = Client(decrypt_text(self.account_data[0]['api_key']), 
-                                        decrypt_text(self.account_data[0]['secret_key']), 
-                                        testnet=self.is_testnet)
-                self.start_price_monitor()
-                self.append_log(f"✅ 成功連線，監控幣種: {self.active_symbols}")
+                # 啟動 WebSocket 串流
+                self.market_stream = MarketStream(self.active_symbols, self.is_testnet)
+                self.market_stream.price_updated.connect(self.update_price_cache)
+                self.market_stream.start()
+                self.append_log(f"✅ WebSocket 連線成功，監控: {self.active_symbols}")
             else:
                 self.price_label.setText("無帳戶")
         except Exception as e:
-            QMessageBox.critical(self, "API 連線失敗", f"連線出錯: {e}")
-            self.price_label.setText("連線失敗")
+            QMessageBox.critical(self, "連線失敗", f"WebSocket 啟動出錯: {e}")
 
     def init_ui(self):
         cw = QWidget()
@@ -540,34 +540,13 @@ class MainWindow(QMainWindow):
 
     def update_price_cache(self, symbol, price):
         self.prices[symbol] = price
-        # 更新顯示文字
         display_str = " | ".join([f"{s.replace('USDT','')}: {p:,.2f}" for s, p in self.prices.items() if p > 0])
-        self.price_label.setText(display_str)
+        QMetaObject.invokeMethod(self.price_label, "setText", Qt.QueuedConnection, Q_ARG(str, display_str))
+        # [新增] 將價格同步給正在運行的 Worker
+        for worker in self.workers:
+            if worker and worker.symbol == symbol:
+                worker.update_price(price)
 
-    def start_price_monitor(self):
-        # 這裡改成多幣種輪詢
-        def monitor():
-            while True:
-                if self.main_client:
-                    for sym in self.active_symbols:
-                        try:
-                            p = float(self.main_client.futures_symbol_ticker(symbol=sym)['price'])
-                            # 使用信號傳回主線程比較安全，這裡簡化直接更新字典
-                            # 為了 UI 安全，我們發射一個自定義信號或利用現有機制
-                            # 但這裡因為是在 Thread 中，最安全是透過 Worker 的信號
-                            # 由於我們沒有全局 Worker，這裡簡單更新價格緩存，讓個別 Worker 的信號去更新 UI
-                            # 或者：
-                            self.prices[sym] = p
-                        except:
-                            pass
-                    
-                    # 組合顯示字串
-                    display_str = " | ".join([f"{s.replace('USDT','')}: {p:,.2f}" for s, p in self.prices.items() if p > 0])
-                    # 使用 QMetaObject 跨線程更新 UI
-                    QMetaObject.invokeMethod(self.price_label, "setText", Qt.QueuedConnection, Q_ARG(str, display_str))
-                    
-                time.sleep(1) # 每秒更新所有幣種
-        threading.Thread(target=monitor, daemon=True).start()
 
     def append_log(self, m):
         now = datetime.now().strftime("%H:%M:%S")

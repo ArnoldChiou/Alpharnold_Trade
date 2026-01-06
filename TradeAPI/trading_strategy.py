@@ -19,6 +19,7 @@ class TradingWorker(QObject):
         self.params = params
         self.symbol = symbol  # [修改] 接收外部傳入的 Symbol
         self.is_running = False
+        self.curr_price = 0.0  # [新增] 用於接收外部（如 WebSocket）傳入的價格
         
         if not os.path.exists(STATE_FOLDER):
             os.makedirs(STATE_FOLDER)
@@ -126,13 +127,14 @@ class TradingWorker(QObject):
         self.is_running = True
         while self.is_running:
             try:
+                # 1. 檢查換日邏輯 (原本就有，保留)
                 today = datetime.now().strftime("%Y-%m-%d")
                 if self.last_trade_date != today:
-                    self.daily_trades = 0
                     self.last_trade_date = today
+                    self.daily_trades = 0
                     self.save_state()
 
-                # [優化] 減少 K 線請求頻率，每 60 秒檢查一次即可
+                # 2. 檢查 K 線 (原本 60 秒一次，建議維持，這頻率很低)
                 now_ts = time.time()
                 if now_ts - self.last_kline_check > 60:
                     klines = self.client.futures_klines(symbol=self.symbol, interval='1d', limit=1)
@@ -141,9 +143,12 @@ class TradingWorker(QObject):
                         self.update_breakout_levels()
                     self.last_kline_check = now_ts
                 
-                # 獲取價格
-                ticker = self.client.futures_symbol_ticker(symbol=self.symbol)
-                curr_price = float(ticker['price'])
+                # 3. [核心修改] 獲取價格：不再呼叫 API，改用緩存的價格
+                if self.curr_price <= 0:
+                    time.sleep(0.5) # 若還沒收到第一次價格，先等待
+                    continue
+                curr_price = self.curr_price
+                # 原有的訊號與策略邏輯
                 try:
                     self.price_update.emit(curr_price)
                 except RuntimeError:
@@ -310,3 +315,7 @@ class TradingWorker(QObject):
 
     def stop(self):
         self.is_running = False
+
+    def update_price(self, price):
+        """[新增] 由外部呼叫，更新當前價格"""
+        self.curr_price = price
