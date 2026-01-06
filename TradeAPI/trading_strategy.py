@@ -41,6 +41,7 @@ class TradingWorker(QObject):
         self.last_trade_date = ""
         self.wait_for_reset = wait_for_reset 
         self.last_candle_open_time = 0
+        self.next_rollover_ms = 0  # 新增：紀錄預計下一次換日的時間 (毫秒)
         self.long_trigger = float('inf')
         self.short_trigger = 0.0
         
@@ -134,14 +135,34 @@ class TradingWorker(QObject):
                     self.daily_trades = 0
                     self.save_state()
 
-                # 2. 檢查 K 線 (原本 60 秒一次，建議維持，這頻率很低)
-                now_ts = time.time()
-                if now_ts - self.last_kline_check > 60:
+                # 2. 換日 K 線精準對齊與輪詢邏輯
+                now_ms = int(time.time() * 1000)
+                # 如果尚未初始化換日時間，先抓一次目前的 K 線結束時間作為目標
+                if self.next_rollover_ms == 0:
                     klines = self.client.futures_klines(symbol=self.symbol, interval='1d', limit=1)
-                    if klines and klines[0][0] > self.last_candle_open_time:
+                    if klines:
+                        # 這是為了讓你一啟動就能看到目前的突破位
                         self.last_candle_open_time = klines[0][0]
                         self.update_breakout_levels()
-                    self.last_kline_check = now_ts
+                        # 設定下一次精準換日的目標時間 (closeTime + 1ms)
+                        self.next_rollover_ms = klines[0][6] + 1 # closeTime + 1ms 就是換日時間
+                        self.safe_emit_log(f"🚀 [系統] 策略已啟動，目標換日時間: {datetime.fromtimestamp(self.next_rollover_ms/1000).strftime('%Y-%m-%d %H:%M:%S')}")
+                
+                # 當系統時間到達或超過預期的換日時間時，開始向幣安「輪詢」
+                if now_ms >= self.next_rollover_ms:
+                    # 請求最新一根 K 線，確認它的 openTime 是否已經跳轉
+                    klines = self.client.futures_klines(symbol=self.symbol, interval='1d', limit=1)
+                    
+                    if klines and klines[0][0] >= self.next_rollover_ms:
+                        # 【成功換日！】更新 K 線資訊與突破位
+                        self.last_candle_open_time = klines[0][0]
+                        self.next_rollover_ms = klines[0][6] + 1 # 設定明天的換日目標
+                        self.update_breakout_levels()
+                        self.safe_emit_log(f"⏰ [系統] 偵測到換日成功，已重新計算策略邊界 ({self.symbol})")
+                    else:
+                        # 幣安 API 尚未產出新 K 線 (可能延遲幾秒)，程式會繼續跑下一輪迴圈
+                        # 這確保了在等待期間，manage_position() (停損監控) 依然在運作
+                        pass
                 
                 # 3. [核心修改] 獲取價格：不再呼叫 API，改用緩存的價格
                 if self.curr_price <= 0:

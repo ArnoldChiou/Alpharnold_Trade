@@ -176,6 +176,7 @@ class MainWindow(QMainWindow):
         self.is_testnet = is_testnet
         self.market_stream = None
         
+        
         # [修改] 不再有單一的 self.symbol，而是收集所有帳戶用到的幣種
         self.active_symbols = set()
         for acc in self.account_data:
@@ -193,6 +194,7 @@ class MainWindow(QMainWindow):
         self.prices = {s: 0.0 for s in self.active_symbols}
         self.workers = [None] * len(account_data)
         self.manual_workers = []
+        self._shared_log_cache = {}  # 新增：用於過濾重複的系統 Log
 
         self.main_client = None
         self.init_ui()
@@ -521,7 +523,7 @@ class MainWindow(QMainWindow):
             # [傳遞] 將 symbol 傳給 Worker
             w = TradingWorker(c, ps, target_symbol, wait_for_reset)
             w.price_update.connect(lambda p, s=target_symbol: self.update_price_cache(s, p)) # 用於更新快取
-            w.log_update.connect(lambda m, n=nick: self.append_log(f"【{n}】 {m}"))
+            w.log_update.connect(lambda m, n=nick, s=target_symbol: self.append_filtered_log(n, s, m))
             
             self.workers[idx] = w
             threading.Thread(target=w.run, daemon=True).start()
@@ -638,5 +640,21 @@ class MainWindow(QMainWindow):
                 self.status_table.setRowHidden(i, False)
             else:
                 self.status_table.setRowHidden(i, True)
+
+    def append_filtered_log(self, nick, symbol, msg):
+        # 定義哪些屬於「全域重複性質」的關鍵字
+        shared_keywords = ["每日換日更新", "策略已啟動", "偵測到換日成功", "交易規則已快取"]
+        is_shared = any(k in msg for k in shared_keywords)
+        if is_shared:
+            # 建立唯一 Key（幣種 + 訊息前段），10 秒內重複的訊息只會顯示一次
+            cache_key = f"{symbol}_{msg[:15]}"
+            now = time.time()
+            if now - self._shared_log_cache.get(cache_key, 0) > 10:
+                self._shared_log_cache[cache_key] = now
+                # 以 [系統-幣種] 形式顯示，不帶特定帳號暱稱
+                self.append_log(f"📢 [系統-{symbol}] {msg}")
+        else:
+            # 一般帳號訊息（如進出場、報錯）照常顯示
+            self.append_log(f"【{nick}】 {msg}")
 
     

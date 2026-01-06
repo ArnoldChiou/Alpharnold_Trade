@@ -29,8 +29,8 @@ class MarketStream(QObject):
         
         # 建立多幣種流 (Combined Streams)
         # 格式: <symbol>@markPrice 或 <symbol>@ticker
-        streams = [f"{s}@ticker" for s in self.symbols]
-        ts = bsm.multiplex_socket(streams)
+        streams = [f"{s}@markPrice" for s in self.symbols]
+        ts = bsm.futures_multiplex_socket(streams)
 
         async with ts as tscm:
             while self._running:
@@ -38,7 +38,7 @@ class MarketStream(QObject):
                 if res and 'data' in res:
                     data = res['data']
                     symbol = data['s']
-                    price = float(data['c']) # 'c' 代表當前成交價
+                    price = float(data['p']) # 'p' 標記價格
                     self.price_updated.emit(symbol, price)
 
         await client.close_connection()
