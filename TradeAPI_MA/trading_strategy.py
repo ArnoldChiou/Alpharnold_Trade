@@ -18,6 +18,7 @@ class TradingWorker(QObject):
         self.strategy_name = strategy_name # 這裡定義策略名稱
         self.is_running = False
         self.curr_price = 0.0
+        self.wait_for_reset = wait_for_reset  # [新增] 存儲等待重置標記
         
         api_str = getattr(client, 'API_KEY', 'unknown')
         api_hash = hashlib.md5(str(api_str).encode()).hexdigest()[:8]
@@ -37,6 +38,20 @@ class TradingWorker(QObject):
         
         if not os.path.exists(STATE_FOLDER): os.makedirs(STATE_FOLDER)
         self.load_state()
+
+    def check_global_clear(self):
+        """[新增] 檢查該幣種在所有策略/帳號中是否都沒有持倉"""
+        try:
+            for f in os.listdir(STATE_FOLDER):
+                # 檢查檔名是否包含當前幣種 (例如: _BTCUSDT_)
+                if f.endswith(".json") and f"_{self.symbol}_" in f:
+                    with open(os.path.join(STATE_FOLDER, f), "r") as j:
+                        if json.load(j).get("in_position", False):
+                            return False
+            return True
+        except Exception as e:
+            self.safe_emit_log(f"檢查全域狀態失敗: {e}")
+            return False
 
     def safe_emit_log(self, msg):
         try: self.log_update.emit(msg)
@@ -68,11 +83,19 @@ class TradingWorker(QObject):
                 self.price_update.emit(curr_price)
 
                 if not self.in_position:
-                    direction = self.params.get('direction', 'BOTH')
-                    if direction in ["BOTH", "LONG"] and curr_price >= self.long_trigger:
-                        self.execute_entry(curr_price, "BUY")
-                    elif direction in ["BOTH", "SHORT"] and curr_price <= self.short_trigger:
-                        self.execute_entry(curr_price, "SELL")
+                    # [新增] wait_for_reset 邏輯
+                    if self.wait_for_reset:
+                        if self.check_global_clear():
+                            self.wait_for_reset = False
+                            self.safe_emit_log(f"🔄 [{self.symbol}] 偵測到環境已清空，解除等待，恢復監控")
+                    
+                    # 只有在不需要等待時才檢查進場訊號
+                    if not self.wait_for_reset:
+                        direction = self.params.get('direction', 'BOTH')
+                        if direction in ["BOTH", "LONG"] and curr_price >= self.long_trigger:
+                            self.execute_entry(curr_price, "BUY")
+                        elif direction in ["BOTH", "SHORT"] and curr_price <= self.short_trigger:
+                            self.execute_entry(curr_price, "SELL")
                 else:
                     self.manage_position(curr_price)
                 time.sleep(0.1)

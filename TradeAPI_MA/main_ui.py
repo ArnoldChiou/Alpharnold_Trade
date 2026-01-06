@@ -528,11 +528,14 @@ class MainWindow(QMainWindow):
             self.workers[idx] = w
             threading.Thread(target=w.run, daemon=True).start()
             
-            self.status_table.setItem(idx, 8, QTableWidgetItem("⚡ 運行"))
+            status_text = "⏳ 等待同步" if wait_for_reset else "⚡ 運行"
+            self.status_table.setItem(idx, 8, QTableWidgetItem(status_text))
+            
             btn.setText("停止")
             btn.setObjectName("RedBtn")
         else:
             if self.workers[idx]: self.workers[idx].stop()
+            self.status_table.setItem(idx, 8, QTableWidgetItem("⏹️ 停止")) # [新增] 停止時恢復文字
             btn.setText("啟動")
             btn.setObjectName("GreenBtn")
         btn.setStyle(btn.style())
@@ -599,7 +602,7 @@ class MainWindow(QMainWindow):
             try:
                 client = Client(decrypt_text(acc['api_key']), decrypt_text(acc['secret_key']), testnet=self.is_testnet)
                 # [修正] 傳入正確的 Symbol
-                w = TradingWorker(client, params, symbol)
+                w = TradingWorker(client, params, symbol, "MA_Manual")
                 w.log_update.connect(lambda m, n=nick: self.append_log(f"【{n}】 {m}"))
                 self.manual_workers.append(w)
                 
@@ -615,7 +618,7 @@ class MainWindow(QMainWindow):
                 self.append_log(f"❌ 【{nick}】初始化失敗: {e}")
 
     def _run_manual_task(self, worker, price, side):
-        worker.execute_entry(price, side, True)
+        worker.execute_entry(price, side)
         worker.is_running = False
 
     def get_params(self):
