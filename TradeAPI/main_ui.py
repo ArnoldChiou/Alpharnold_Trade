@@ -67,7 +67,7 @@ class AccountManager(QDialog):
         self.symbol_combo.addItems(["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT"])
         
         self.dir_combo = QComboBox()
-        self.dir_combo.addItems(["LONG (只做多)", "SHORT (只做空)", "BOTH (多空皆做)"])
+        self.dir_combo.addItems(["LONG (只做多)", "SHORT (只做空)"])
         
         gl.addRow("暱稱 (Nickname):", self.nick_in)
         gl.addRow("API Key:", self.api_in)
@@ -310,6 +310,16 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.log_display)
 
     def setup_stat_tab(self, layout):
+        # --- 新增篩選控制區域 ---
+        filter_layout = QHBoxLayout()
+        filter_layout.addWidget(QLabel("方向篩選："))
+        self.side_filter = QComboBox()
+        self.side_filter.addItems(["全部", "LONG", "SHORT"])
+        self.side_filter.currentTextChanged.connect(self.apply_account_filter)
+        filter_layout.addWidget(self.side_filter)
+        filter_layout.addStretch()
+        layout.addLayout(filter_layout)
+
         self.status_table = QTableWidget()
         self.status_table.setColumnCount(12)
         self.status_table.setHorizontalHeaderLabels(["設定", "今日單", "總單", "餘額", "倉位", "均價", "PNL", "預計止損", "狀態", "開關", "平倉", "移除"])
@@ -388,6 +398,7 @@ class MainWindow(QMainWindow):
                 conf = acc.get('config', {})
                 self.active_symbols.add(conf.get('symbol', 'BTCUSDT'))
             self.active_symbols = sorted(list(self.active_symbols))
+            self.apply_account_filter()
 
     def update_all_account_status(self):
         for i, acc in enumerate(self.account_data):
@@ -637,3 +648,16 @@ class MainWindow(QMainWindow):
         # [修改] 這裡的方向將被個別帳戶設定覆蓋
         p['direction'] = "BOTH" 
         return p
+    
+    def apply_account_filter(self):
+        filter_text = self.side_filter.currentText()
+        for i in range(self.status_table.rowCount()):
+            acc = self.account_data[i]
+            direction = acc.get('config', {}).get('direction', '')
+            
+            if filter_text == "全部" or direction == filter_text:
+                self.status_table.setRowHidden(i, False)
+            else:
+                self.status_table.setRowHidden(i, True)
+
+    
