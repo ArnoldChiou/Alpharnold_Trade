@@ -76,7 +76,7 @@ class TradingWorker(QObject):
         
         # 3. 更新日誌顯示，反映你介面上輸入的真實天數
         now_str = datetime.now().strftime("%H:%M:%S")
-        self.safe_emit_log(f"⏰ MA更新 | 多({l_win}):{self.long_trigger:.1f} | 空({s_win}):{self.short_trigger:.1f}")
+        self.safe_emit_log(f"⏰ MA更新 | 多({l_win}):{self.long_trigger:.4f} | 空({s_win}):{self.short_trigger:.4f}")
 
     def run(self):
         self.is_running = True
