@@ -57,12 +57,26 @@ class TradingWorker(QObject):
         except RuntimeError: pass
 
     def update_strategy_levels(self):
-        win = int(self.params.get('ma_window', 6))
-        ma_val = get_ma_level(self.client, self.symbol, win)
-        if ma_val:
-            self.long_trigger = ma_val * (1 + self.params['long_buffer'] / 100)
-            self.short_trigger = ma_val * (1 - self.params['short_buffer'] / 100)
-            self.safe_emit_log(f"⏰ MA({win})更新 | 多:{self.long_trigger:.1f} | 空:{self.short_trigger:.1f}")
+        """[MA專用] 計算觸發位 - 修正版"""
+        # 1. 分別從參數中抓取多頭與空頭的 MA 天數，若抓不到才用預設值
+        l_win = int(self.params.get('long_ma_window', 6))
+        s_win = int(self.params.get('short_ma_window', 29))
+    
+        # 2. 分別獲取兩條均線的數值
+        ma_long = get_ma_level(self.client, self.symbol, l_win)
+        ma_short = get_ma_level(self.client, self.symbol, s_win)
+    
+        if ma_long:
+            # 使用多頭緩衝計算進場位
+            self.long_trigger = ma_long * (1 + self.params['long_buffer'] / 100)
+    
+        if ma_short:
+            # 使用空頭緩衝計算進場位
+            self.short_trigger = ma_short * (1 - self.params['short_buffer'] / 100)
+        
+        # 3. 更新日誌顯示，反映你介面上輸入的真實天數
+        now_str = datetime.now().strftime("%H:%M:%S")
+        self.safe_emit_log(f"⏰ MA更新 | 多({l_win}):{self.long_trigger:.1f} | 空({s_win}):{self.short_trigger:.1f}")
 
     def run(self):
         self.is_running = True
