@@ -115,19 +115,23 @@ class TradingWorker(QObject):
                 self.price_update.emit(curr_price)
 
                 if not self.in_position:
-                    if self.wait_for_reset:
-                        if self.check_global_clear():
-                            self.wait_for_reset = False
-                            self.safe_emit_log(f"🔄 [{self.symbol}] 偵測到環境已清空，解除等待，恢復監控")
+                    # --- 進場邏輯修正：增加區間限制 ---
+                    direction = self.params.get('direction', 'BOTH')
                     
-                    if not self.wait_for_reset:
-                        direction = self.params.get('direction', 'BOTH')
-                        if direction in ["BOTH", "LONG"] and curr_price >= self.long_trigger:
-                            self.execute_entry(curr_price, "BUY")
-                        elif direction in ["BOTH", "SHORT"] and curr_price <= self.short_trigger:
-                            self.execute_entry(curr_price, "SELL")
+                    # 容許範圍 (例如 0.5%，避免現價已經衝太高才進場)
+                    # 您可以根據需求調整 0.005 這個數值
+                    tolerance = 0.005 
+
+                    # 做多判斷：現價要在【觸發位】與【觸發位+0.5%】之間才進場
+                    if direction in ["BOTH", "LONG"] and (self.long_trigger <= curr_price <= self.long_trigger * (1 + tolerance)):
+                        self.execute_entry(curr_price, "BUY")
+                    
+                    # 做空判斷：現價要在【觸發位】與【觸發位-0.5%】之間才進場
+                    elif direction in ["BOTH", "SHORT"] and (self.short_trigger * (1 - tolerance) <= curr_price <= self.short_trigger):
+                        self.execute_entry(curr_price, "SELL")
                 else:
                     self.manage_position(curr_price)
+                
                 time.sleep(0.1)
             except Exception as e:
                 self.safe_emit_log(f"系統異常: {e}"); time.sleep(2)
