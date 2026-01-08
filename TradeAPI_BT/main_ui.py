@@ -412,6 +412,7 @@ class MainWindow(QMainWindow):
                 api = decrypt_text(acc['api_key'])
                 sec = decrypt_text(acc['secret_key'])
                 c = Client(api, sec, testnet=self.is_testnet)
+                c.timestamp_offset = c.get_server_time()['serverTime'] - int(time.time() * 1000) #程式自動修正時間差
                 ai = c.futures_account()
                 h = hashlib.md5(api.encode()).hexdigest()[:8]
                 
@@ -519,6 +520,7 @@ class MainWindow(QMainWindow):
             api = decrypt_text(self.account_data[idx]['api_key'])
             sec = decrypt_text(self.account_data[idx]['secret_key'])
             c = Client(api, sec, testnet=self.is_testnet)
+            c.timestamp_offset = c.get_server_time()['serverTime'] - int(time.time() * 1000) #程式自動修正時間差
             
             # [傳遞] 將 symbol 傳給 Worker
             w = TradingWorker(c, ps, target_symbol, "BT", wait_for_reset)
