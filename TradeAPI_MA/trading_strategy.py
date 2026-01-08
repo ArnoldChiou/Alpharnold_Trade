@@ -138,6 +138,24 @@ class TradingWorker(QObject):
 
     def execute_entry(self, price, side):
         try:
+            # 1. 獲取帳戶資訊
+            acc_info = self.client.futures_account()
+            # 2. 檢查舊有倉位接管邏輯
+            existing_pos = next((p for p in acc_info['positions'] if p['symbol'] == self.symbol), None)
+            if existing_pos and float(existing_pos['positionAmt']) != 0:
+                current_amt = float(existing_pos['positionAmt'])
+                # 檢查方向是否一致 (多單對正數，空單對負數)
+                if (side == "BUY" and current_amt > 0) or (side == "SELL" and current_amt < 0):
+                    self.safe_emit_log("⚠️ 偵測到已有倉位，自動接管。")
+                    self.in_position = True
+                    self.current_side = side
+                    self.position_qty = abs(current_amt)
+                    self.entry_price, self.extreme_price = price, price
+                    sl_pct = self.params['long_sl'] if side == "BUY" else self.params['short_sl']
+                    self.sl_price = price * (1 - sl_pct/100) if side == "BUY" else price * (1 + sl_pct/100)
+                    self.save_state()
+                    return # 直接結束，不下單
+            # 3. 若無現有倉位，執行原有下單流程    
             rules = get_symbol_rules(self.client, self.symbol)
             if not rules: return
             

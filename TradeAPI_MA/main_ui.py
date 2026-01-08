@@ -414,6 +414,7 @@ class MainWindow(QMainWindow):
                 api = decrypt_text(acc['api_key'])
                 sec = decrypt_text(acc['secret_key'])
                 c = Client(api, sec, testnet=self.is_testnet)
+                c.timestamp_offset = c.get_server_time()['serverTime'] - int(time.time() * 1000) #程式自動修正時間差
                 ai = c.futures_account()
                 h = hashlib.md5(api.encode()).hexdigest()[:8]
                 
@@ -453,7 +454,7 @@ class MainWindow(QMainWindow):
                         cb.setEnabled(False)
                         cb.setStyleSheet("background: #555; color: #aaa;")
             except Exception as e:
-                pass
+                self.append_log(f"❌ 帳號 {acc.get('nickname')} 刷新失敗: {e}")
 
     def manual_close_account(self, idx):
         acc = self.account_data[idx]
@@ -518,6 +519,7 @@ class MainWindow(QMainWindow):
             api = decrypt_text(self.account_data[idx]['api_key'])
             sec = decrypt_text(self.account_data[idx]['secret_key'])
             c = Client(api, sec, testnet=self.is_testnet)
+            c.timestamp_offset = c.get_server_time()['serverTime'] - int(time.time() * 1000) #程式自動修正時間差
             
             # [修正關鍵] 加入 "MA" 作為第四個參數 (strategy_name)
             w = TradingWorker(c, ps, target_symbol, "MA", wait_for_reset)
