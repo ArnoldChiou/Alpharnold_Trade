@@ -1,0 +1,28 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 15
+VisualStudioVersion = 15.0.26430.15
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{888888A0-9F3D-457C-B088-3A5042F75D52}") = "PythonExampleOrder", "Order_Service\PythonExampleOrder.pyproj", "{D07A9150-EC65-41A7-9040-0CAAEF0914BE}"
+EndProject
+Project("{888888A0-9F3D-457C-B088-3A5042F75D52}") = "PythonExampleQuote", "Quote_Service\PythonExampleQuote.pyproj", "{8B28C82A-E904-4DD6-8F94-9645FCF17B5F}"
+EndProject
+Project("{888888A0-9F3D-457C-B088-3A5042F75D52}") = "PythonExampleReply", "Reply_Service\PythonExampleReply.pyproj", "{0D046EC4-B7E7-4FE9-A419-CA970F6D68F0}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{D07A9150-EC65-41A7-9040-0CAAEF0914BE}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D07A9150-EC65-41A7-9040-0CAAEF0914BE}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8B28C82A-E904-4DD6-8F94-9645FCF17B5F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8B28C82A-E904-4DD6-8F94-9645FCF17B5F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0D046EC4-B7E7-4FE9-A419-CA970F6D68F0}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0D046EC4-B7E7-4FE9-A419-CA970F6D68F0}.Release|Any CPU.ActiveCfg = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal
