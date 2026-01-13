@@ -103,10 +103,15 @@ class TradingWorker(QObject):
                 # 如果是換日輪詢觸發
                 elif now_ms >= self.next_rollover_ms:
                     klines = self.client.futures_klines(symbol=self.symbol, interval='1d', limit=1)
-                    if klines:
+                    
+                    # [修正] 必須確認 K 線的 Open Time (klines[0][0]) 確實大於等於目標時間，才代表新 K 線已產出
+                    if klines and klines[0][0] >= self.next_rollover_ms:
                         self.update_strategy_levels()
                         self.next_rollover_ms = klines[0][6] + 1
                         self.safe_emit_log(f"⏰ [系統] 偵測到換日成功，已重新計算策略邊界 ({self.symbol})")
+                    else:
+                        # API 尚未產出新 K 線，跳過本次循環，等待下一輪
+                        pass
                 
                 curr_price = self.curr_price
                 if curr_price <= 0:
