@@ -1,6 +1,6 @@
 # API com元件初始化
 import comtypes.client
-comtypes.client.GetModule(r'SKCOM.dll')
+comtypes.client.GetModule(r'C:\Trading\TradeAPI_MA_TX\units\SKCOM.dll')
 import comtypes.gen.SKCOMLib as sk
 
 # 群益API元件導入Python code內用的物件宣告
