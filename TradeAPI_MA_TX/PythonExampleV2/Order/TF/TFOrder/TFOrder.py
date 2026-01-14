@@ -169,6 +169,20 @@ class MessageForm(tk.Frame):
 
         def on_comboBoxUserID(event):
             m_pSKOrder.SKOrderLib_Initialize() # 這裡有做下單初始化
+            # 2. 【關鍵修正】讀取憑證 (參數必須是身分證字號，即 comboBoxUserID 的值)
+            user_id = self.comboBoxUserID.get()
+            nCode = m_pSKOrder.ReadCertByID(user_id)
+            # 檢查憑證是否讀取成功
+            cert_msg = m_pSKCenter.SKCenterLib_GetReturnCodeMessage(nCode)
+            print(f"【憑證狀態】{user_id} 讀取結果: {cert_msg}")
+            if nCode == 0:
+                # 3. 憑證成功後才獲取帳號
+                m_pSKOrder.GetUserAccount()
+                self.comboBoxUserID['values'] = list(dictUserID.keys())
+                self.comboBoxAccount['values'] = dictUserID[self.comboBoxUserID.get()]
+            else:
+                print(">>> 請注意：憑證讀取失敗，將無法進行委託下單。")
+
             m_pSKOrder.GetUserAccount() # 拿到交易帳號
             self.comboBoxUserID['values'] = list(dictUserID.keys())
             self.comboBoxAccount['values'] = dictUserID[self.comboBoxUserID.get()]
