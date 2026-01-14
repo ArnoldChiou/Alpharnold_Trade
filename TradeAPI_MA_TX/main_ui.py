@@ -6,19 +6,25 @@ import config
 from sk_utils import handle_code, sk # 使用共用的工具
 from request_futures_data import QuoteFetcher # 直接導入您那隻會動的程式
 from trading_strategy import TradingWorker
+from KLine_Fetch import KLineFetcher
+from datetime import datetime, timedelta # 新增：日期計算
 
 # 1. 建立一個橋接器，負責把 request_futures_data 的資料傳給 PySide6 UI
 class PriceBridge(QObject):
     price_signal = Signal(float)
     account_signal = Signal(str)
     log_signal = Signal(str)
+    kline_data_signal = Signal(str, str) # 傳遞 K 線字串
+    request_kline_command = Signal(str, str) # 傳送指令 請求 K 線資料
 
 # 2. 繼承您原始的 QuoteFetcher，複寫它的事件來抓取資料，但不改動原始檔案內容
 class UIBridgedFetcher(QuoteFetcher):
     def __init__(self, bridge):
-        # 這裡會觸發原始的 QuoteFetcher.__init__，建立隱藏的 tk.Tk()
+        import pythoncom
+        pythoncom.CoInitialize() # 務必新增這行，確保 COM 元件跨執行緒運作
         super().__init__()
         self.bridge = bridge
+        self.bridge.request_kline_command.connect(self.request_kline)
 
     # 複寫報價事件：執行原本的 print，並額外發送訊號給 UI
     def OnNotifyQuoteLONG(self, sMarketNo, nIndex):
@@ -47,6 +53,23 @@ class UIBridgedFetcher(QuoteFetcher):
         super().OnConnection(nKind, nCode)
         if nKind == 3003:
             self.bridge.log_signal.emit("🚀 報價伺服器就緒")
+
+    def request_kline(self, start_date, end_date):
+        target = "TX00"
+        res = self.m_pSKQuote.SKQuoteLib_RequestKLineAMByDate(target, 4, 1, 0, start_date, end_date, 1)
+        return self.m_pSKCenter.SKCenterLib_GetReturnCodeMessage(handle_code(res))
+    
+
+    # --- 新增這個事件 (對接 RequestKLineAMByDate 的回傳) ---
+    def OnNotifyKLineData(self, bstrStockNo, bstrData):
+        # 無論是否有資料，都轉發給 UI
+        if bstrData:
+            # 傳送 K 線資料字串
+            self.bridge.kline_data_signal.emit(bstrStockNo, bstrData)
+        else:
+            # 資料傳完了，傳送一個空字串作為「結束標記」
+            self.bridge.log_signal.emit(f"📊 {bstrStockNo} 歷史 K 線讀取完成。")
+            self.bridge.kline_data_signal.emit(bstrStockNo, "")
 
 # 3. 建立執行緒來運行原本的 tkinter 訊息幫浦
 class FetcherThread(QThread):
@@ -78,6 +101,7 @@ class MainWindow(QMainWindow):
         self.bridge.price_signal.connect(self.on_price_update)
         self.bridge.account_signal.connect(self.on_account_ready)
         self.bridge.log_signal.connect(self.append_log)
+        self.bridge.kline_data_signal.connect(self.on_history_received)
         
         self.engine_thread = FetcherThread(self.bridge)
         self.engine_thread.start()
@@ -135,6 +159,11 @@ class MainWindow(QMainWindow):
             return
             
         if self.start_btn.text() == "啟動策略":
+            # --- 新增：自動計算日期 ---
+            today = datetime.now()
+            s_dt = (today - timedelta(days=60)).strftime("%Y%m%d")
+            e_dt = (today - timedelta(days=1)).strftime("%Y%m%d")
+
             params = {
                 'ma': int(self.ma_in.text()), 'qty': int(self.qty_in.text()),
                 'buffer': float(self.buffer_in.text()), 'sl': float(self.sl_in.text()),
@@ -146,7 +175,7 @@ class MainWindow(QMainWindow):
             self.worker.log_signal.connect(self.append_log)
             
             # 請求歷史 K 線
-            self.engine_thread.fetcher.m_pSKQuote.SKQuoteLib_RequestKLine("TX00", 4, 1)
+            self.bridge.request_kline_command.emit(s_dt, e_dt)
             
             self.start_btn.setText("停止策略")
             self.start_btn.setStyleSheet("background-color: #c0392b; color: white;")
@@ -156,6 +185,21 @@ class MainWindow(QMainWindow):
             self.start_btn.setText("啟動策略")
             self.start_btn.setStyleSheet("background-color: #27ae60; color: white;")
             self.append_log("⏹️ 策略已停止")
+
+    # 處理回傳的歷史資料
+    def on_history_received(self, bstrStockNo, bstrData):
+        if self.worker and "TX" in bstrStockNo:
+            # 當收到空字串，代表 60 天資料全部跑完了
+            if not bstrData: 
+                self.append_log("✅ 歷史資料讀取完畢，顯示最新數據...")
+                # 此時 worker.history_prices 已經被 add_history 填滿了最後 5 筆
+                self.worker.report_status() 
+                return
+                
+            cols = bstrData.split(',')
+            if len(cols) >= 5:
+                # 這裡會不斷更新 worker 內部的 current_ma
+                self.worker.add_history(float(cols[4]), is_history=True)
 
     def append_log(self, msg):
         self.log_box.append(msg)

@@ -65,7 +65,7 @@ class KLineFetcher:
             self.exit_timer = self.root.after(2000, self.force_exit)
         else:
             print(f"\n>>> [通知] {bstrStockNo} 歷史資料讀取完成。")
-            self.force_exit()
+            self.root.after(500, self.force_exit)
 
     def force_exit(self):
         """ 統一關閉流程 """
@@ -97,7 +97,7 @@ class KLineFetcher:
         self.m_pSKQuote.SKQuoteLib_EnterMonitorLONG()
         
         # 加強：若 2 秒內沒出現 3003，主動引導一次
-        self.root.after(2000, lambda: self.m_pSKQuote.SKQuoteLib_RequestStockList(2))
+        self.root.after(5000, lambda: self.m_pSKQuote.SKQuoteLib_RequestStockList(2))
         
         print(">>> 系統運行中，等待 3003 訊號...")
         self.root.mainloop()
