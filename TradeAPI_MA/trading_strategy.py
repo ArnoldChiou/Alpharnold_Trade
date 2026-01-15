@@ -57,32 +57,27 @@ class TradingWorker(QObject):
         except RuntimeError: pass
 
     def update_strategy_levels(self):
-        """[MA專用] 計算觸發位 - 修正版"""
+        """[MA專用] 計算觸發位 - 嚴格驗證版"""
         try:
-            # 1. 分別從參數中抓取多頭與空頭的 MA 天數
             l_win = int(self.params.get('long_ma_window', 6))
             s_win = int(self.params.get('short_ma_window', 29))
-        
-            # 2. 分別獲取兩條均線的數值
-            ma_long = get_ma_level(self.client, self.symbol, l_win)
-            ma_short = get_ma_level(self.client, self.symbol, s_win)
-        
-            # [修正] 檢查是否獲取失敗，若任一失敗則回傳 False 以便重試
-            if ma_long is None or ma_short is None:
-                self.safe_emit_log(f"⚠️ MA 數據獲取失敗，正在重試...")
-                return False  # <--- 回傳失敗
-        
-            # 若成功獲取，才更新觸發位
-            if ma_long:
-                self.long_trigger = ma_long * (1 + self.params['long_buffer'] / 100)
-        
-            if ma_short:
-                self.short_trigger = ma_short * (1 - self.params['short_buffer'] / 100)
             
-            # 3. 更新日誌
-            now_str = datetime.now().strftime("%H:%M:%S")
+            # [修正] 傳入 self.next_rollover_ms 進行驗證
+            # 只有當抓到的資料包含「剛開盤的新K線」時，才算成功
+            ma_long = get_ma_level(self.client, self.symbol, l_win, self.next_rollover_ms)
+            ma_short = get_ma_level(self.client, self.symbol, s_win, self.next_rollover_ms)
+        
+            # 若任一失敗 (包含抓到舊資料回傳 None)，則回傳 False 讓主迴圈重試
+            if ma_long is None or ma_short is None:
+                self.safe_emit_log(f"⚠️ MA 數據尚未同步，正在重試...")
+                return False 
+        
+            # 更新數值
+            self.long_trigger = ma_long * (1 + self.params['long_buffer'] / 100)
+            self.short_trigger = ma_short * (1 - self.params['short_buffer'] / 100)
+            
             self.safe_emit_log(f"⏰ MA更新 | 多({l_win}):{self.long_trigger:.4f} | 空({s_win}):{self.short_trigger:.4f}")
-            return True # <--- 回傳成功
+            return True
 
         except Exception as e:
             self.safe_emit_log(f"⚠️ 更新策略發生錯誤: {e}")
@@ -112,23 +107,18 @@ class TradingWorker(QObject):
                 
                 # 如果是換日輪詢觸發
                 elif now_ms >= self.next_rollover_ms:
+                    # 先做快速檢查 (limit=1)
                     klines = self.client.futures_klines(symbol=self.symbol, interval='1d', limit=1)
                     
-                    # [修正] 必須確認 K 線的 Open Time 確實大於等於目標時間
                     if klines and klines[0][0] >= self.next_rollover_ms:
-                        
-                        # [修正] 只有當 update_strategy_levels 回傳 True (成功) 時，才推進時間
-                        if self.update_strategy_levels():
+                        # 再做完整計算 (帶有驗證機制)
+                        if self.update_strategy_levels(): # <--- 只有這裡回傳 True 才會推進時間
                             self.next_rollover_ms = klines[0][6] + 1
                             self.safe_emit_log(f"⏰ [系統] 偵測到換日成功，已重新計算策略邊界 ({self.symbol})")
                         else:
-                            # 如果更新失敗 (例如 API 超時)，這裡「不」更新 next_rollover_ms
-                            # 讓迴圈在下一次 (0.1秒後) 再次進入此區塊重試，直到成功為止
-                            time.sleep(1) # 稍微休息一下避免頻繁請求
-                            pass
-                            
+                            # 驗證失敗 (抓到舊資料)，暫停 1 秒後重試
+                            time.sleep(1)
                     else:
-                        # API 尚未產出新 K 線，跳過本次循環，等待下一輪
                         pass
                 
                 curr_price = self.curr_price

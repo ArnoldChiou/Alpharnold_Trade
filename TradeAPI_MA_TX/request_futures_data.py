@@ -71,8 +71,8 @@ class QuoteFetcher:
         
         # 價格除以 100.0 (Quote.py 標準寫法)
         # 注意：TX00 在盤後(夜盤)會有成交價跳動
-        print(f"【{pSKStock.bstrStockNo} {pSKStock.bstrStockName.strip()}】"
-              f"成交: {pSKStock.nClose/100.0:>8} | 總量: {pSKStock.nTQty}")
+        #print(f"【{pSKStock.bstrStockNo} {pSKStock.bstrStockName.strip()}】"
+              #f"成交: {pSKStock.nClose/100.0:>8} | 總量: {pSKStock.nTQty}")
 
     # --- 流程控制 ---
     def start(self):
