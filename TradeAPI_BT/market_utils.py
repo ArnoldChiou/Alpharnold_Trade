@@ -1,14 +1,21 @@
 from binance.client import Client
 import math
 
-def get_breakout_levels(client, symbol, lookback):
+def get_breakout_levels(client, symbol, lookback, check_time=None):
     try:
-        # 抓取 lookback + 1 根，因為最後一根是「今天」不能算
+        # 抓取 lookback + 1 根
         klines = client.futures_klines(symbol=symbol, interval='1d', limit=lookback + 1)
         if len(klines) < lookback + 1:
             return None, None
             
-        # [:-1] 代表排除掉最後一根（今天），只取前面「已完成收盤」的天數
+        # [新增] 強制檢查：最後一根 K 線的時間必須 >= 預期的換日時間
+        if check_time is not None:
+            last_open_time = klines[-1][0]
+            if last_open_time < check_time:
+                # 代表抓到的資料還是舊的，回傳 None 讓上層重試
+                return None, None
+
+        # [:-1] 排除掉最後一根（今天），只取前面已完成的 K 線
         closed_klines = klines[:-1]
         
         highs = [float(k[2]) for k in closed_klines]

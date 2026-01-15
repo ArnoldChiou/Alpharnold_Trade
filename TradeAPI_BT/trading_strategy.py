@@ -155,15 +155,20 @@ class TradingWorker(QObject):
                     # 請求最新一根 K 線，確認它的 openTime 是否已經跳轉
                     klines = self.client.futures_klines(symbol=self.symbol, interval='1d', limit=1)
                     
+                    # 必須確認 K 線的 Open Time 確實大於等於目標時間
                     if klines and klines[0][0] >= self.next_rollover_ms:
-                        # 【成功換日！】更新 K 線資訊與突破位
-                        self.last_candle_open_time = klines[0][0]
-                        self.next_rollover_ms = klines[0][6] + 1 # 設定明天的換日目標
-                        self.update_breakout_levels()
-                        self.safe_emit_log(f"⏰ [系統] 偵測到換日成功，已重新計算策略邊界 ({self.symbol})")
+                        
+                        # [修正] 只有 update_breakout_levels 回傳 True (資料驗證成功) 才推進時間
+                        if self.update_breakout_levels():
+                            self.last_candle_open_time = klines[0][0]
+                            self.next_rollover_ms = klines[0][6] + 1 # 設定明天的換日目標
+                            self.safe_emit_log(f"⏰ [系統] 偵測到換日成功，已重新計算策略邊界 ({self.symbol})")
+                        else:
+                            # 資料還沒同步，休息 1 秒後重試
+                            time.sleep(1)
+                            
                     else:
-                        # 幣安 API 尚未產出新 K 線 (可能延遲幾秒)，程式會繼續跑下一輪迴圈
-                        # 這確保了在等待期間，manage_position() (停損監控) 依然在運作
+                        # 幣安 API 尚未產出新 K 線，繼續輪詢
                         pass
                 
                 # 3. [核心修改] 獲取價格：不再呼叫 API，改用緩存的價格
@@ -214,14 +219,30 @@ class TradingWorker(QObject):
         return True
 
     def update_breakout_levels(self):
-        l, s = int(self.params['long_lookback']), int(self.params['short_lookback'])
-        h, _ = get_breakout_levels(self.client, self.symbol, l)
-        _, low = get_breakout_levels(self.client, self.symbol, s)
-        if h and low:
+        """計算突破位 - 嚴格驗證版"""
+        try:
+            l = int(self.params['long_lookback'])
+            s = int(self.params['short_lookback'])
+            
+            # [修正] 傳入 self.next_rollover_ms 進行驗證
+            h, _ = get_breakout_levels(self.client, self.symbol, l, self.next_rollover_ms)
+            _, low = get_breakout_levels(self.client, self.symbol, s, self.next_rollover_ms)
+            
+            # 若獲取失敗 (None) 或資料過舊，回傳 False
+            if h is None or low is None:
+                self.safe_emit_log(f"⚠️ 數據同步中，稍後重試...")
+                return False
+
             self.long_trigger = h * (1 + self.params['long_buffer'] / 100)
             self.short_trigger = low * (1 - self.params['short_buffer'] / 100)
+            
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             self.safe_emit_log(f"📅 [{now_str}] 每日換日更新 | 多單觸發: {self.long_trigger:.2f} | 空單觸發: {self.short_trigger:.2f}")
+            return True # 更新成功
+            
+        except Exception as e:
+            self.safe_emit_log(f"⚠️ 更新失敗: {e}")
+            return False
 
     def execute_entry(self, price, side, test_mode=False):
         try:
