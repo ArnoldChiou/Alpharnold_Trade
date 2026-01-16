@@ -644,19 +644,16 @@ class MainWindow(QMainWindow):
                 self.status_table.setRowHidden(i, True)
 
     def append_filtered_log(self, nick, symbol, msg):
-        # 定義哪些屬於「全域重複性質」的關鍵字
+        # 定義哪些屬於系統訊息的關鍵字 (保留圖示美化)
         shared_keywords = ["每日換日更新", "策略已啟動", "偵測到換日成功", "交易規則已快取"]
         is_shared = any(k in msg for k in shared_keywords)
+        
         if is_shared:
-            # 建立唯一 Key（幣種 + 訊息前段），10 秒內重複的訊息只會顯示一次
-            cache_key = f"{symbol}_{msg[:15]}"
-            now = time.time()
-            if now - self._shared_log_cache.get(cache_key, 0) > 10:
-                self._shared_log_cache[cache_key] = now
-                # 以 [系統-幣種] 形式顯示，不帶特定帳號暱稱
-                self.append_log(f"📢 [系統-{symbol}] {msg}")
+            # [修改] 移除時間快取檢查，直接顯示每一條訊息
+            # 為了區分是哪個帳號觸發的，我在後面補上 (nick)
+            self.append_log(f"📢 [系統-{symbol}] {msg} ({nick})")
         else:
-            # 一般帳號訊息（如進出場、報錯）照常顯示
+            # 一般訊息照常顯示
             self.append_log(f"【{nick}】 {msg}")
 
     
