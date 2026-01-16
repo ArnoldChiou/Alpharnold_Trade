@@ -15,3 +15,4 @@ build
 dist
 *.spec
 history_kline.csv
+Boring_Trade/
