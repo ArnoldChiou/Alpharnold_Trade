@@ -89,6 +89,8 @@ class TradingWorker(QObject):
 
     def execute_order(self, side, price):
         """ 發送下單指令到群益 API """
+        # [新增] 每次下單前重新讀取並驗證憑證 (解決 1038 錯誤)
+        self.order.ReadCertByID(config.USER_ID)
         pOrder = sk.FUTUREORDER()
         pOrder.bstrFullAccount = self.params['account']
         pOrder.bstrStockNo = self.symbol
