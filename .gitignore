@@ -16,3 +16,4 @@ dist
 *.spec
 history_kline.csv
 Boring_Trade/
+credentials.json
