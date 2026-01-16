@@ -3,12 +3,11 @@ import os
 import sys
 import csv
 import tkinter as tk
-from dotenv import load_dotenv
+import config
 
 # 1. 載入環境變數
-load_dotenv()
-USER_ID = os.getenv("CAPITAL_USER_ID")
-USER_PASS = os.getenv("CAPITAL_PASSWORD")
+USER_ID = config.USER_ID
+USER_PASS = config.USER_PASS
 
 # 2. DLL 元件初始化
 DLL_PATH = r'units\SKCOM.dll'
