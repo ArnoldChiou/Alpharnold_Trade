@@ -11,7 +11,7 @@ USER_ID = os.getenv("CAPITAL_USER_ID")
 USER_PASS = os.getenv("CAPITAL_PASSWORD")
 
 # 2. DLL 元件初始化
-DLL_PATH = r'C:\Trading\TradeAPI_MA_TX\units\SKCOM.dll'
+DLL_PATH = r'units\SKCOM.dll'
 comtypes.client.GetModule(DLL_PATH)
 import comtypes.gen.SKCOMLib as sk
 

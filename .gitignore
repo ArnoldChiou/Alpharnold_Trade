@@ -17,3 +17,4 @@ dist
 history_kline.csv
 Boring_Trade/
 credentials.json
+tx_states

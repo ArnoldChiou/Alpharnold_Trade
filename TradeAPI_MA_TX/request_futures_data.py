@@ -11,7 +11,7 @@ USER_ID = os.getenv("CAPITAL_USER_ID")
 USER_PASS = os.getenv("CAPITAL_PASSWORD")
 
 # 2. DLL 元件初始化
-DLL_PATH = r'C:\Trading\TradeAPI_MA_TX\units\SKCOM.dll'
+DLL_PATH = r'units\SKCOM.dll'
 comtypes.client.GetModule(DLL_PATH)
 import comtypes.gen.SKCOMLib as sk
 
@@ -59,9 +59,8 @@ class QuoteFetcher:
         
         # 關鍵修正：判斷 nKind (種類) 是否為 3003 (Stocks Ready)
         if nKind == 3003:
-            print("\n>>> [重要訊號] 商品同步完成，啟動訂閱流程...")
+            print("\n>>> [重要訊號] 商品同步完成 (等待 UI 指令訂閱)...")
             self.is_ready = True
-            self.subscribe_market_data()
 
     def OnNotifyQuoteLONG(self, sMarketNo, nIndex):
         pSKStock = sk.SKSTOCKLONG()
@@ -117,12 +116,10 @@ class QuoteFetcher:
         
         self.root.after(1000, self.backup_check)
 
-    def subscribe_market_data(self):
-        # 訂閱 TX00 (台指期全盤)
-        target = "TX00"
-        print(f"步驟 3: 發送訂閱請求 [{target}]...")
-        # 參考 Quote.py: RequestStocks(頁碼, 代碼)
-        res = self.m_pSKQuote.SKQuoteLib_RequestStocks(1, target)
+    def subscribe_market_data(self, symbol="TX00"):
+        print(f"步驟 3: 發送訂閱請求 [{symbol}]...")
+        # Page 1, 代碼
+        res = self.m_pSKQuote.SKQuoteLib_RequestStocks(1, symbol)
         nCode = handle_code(res)
         print(f"訂閱請求結果: {self.m_pSKCenter.SKCenterLib_GetReturnCodeMessage(nCode)}")
 
