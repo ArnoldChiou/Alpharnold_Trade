@@ -135,12 +135,11 @@ class UIBridgedFetcher(QuoteFetcher):
     # 重新連線功能
     def reconnect_quote(self):
         import config
-        # 1. 重新登入 (因為被 KLine_Fetch 踢掉了)
+        # 1. 重新登入
         self.bridge.log_signal.emit("🔄 偵測到連線中斷，正在重新登入...")
         self.m_pSKCenter.SKCenterLib_Login(config.USER_ID, config.USER_PASS)
         # 2. 重新進入監控
         self.m_pSKQuote.SKQuoteLib_EnterMonitorLONG()
-        # (成功連線後，會觸發 OnConnection 3003，介面會自動訂閱)
 
 # --- 3. 執行緒 ---
 class FetcherThread(QThread):
@@ -158,7 +157,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Capital MA Trader - 自動重連版")
-        self.setMinimumSize(1100, 750)
+        self.setMinimumSize(1150, 800)
         
         self.is_ready = False
         self.workers = {} 
@@ -193,44 +192,78 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(cw)
         layout = QVBoxLayout(cw)
 
+        # 報價顯示
         self.price_label = QLabel("等待報價...")
         self.price_label.setStyleSheet("font-size: 36px; color: #00ff00; background: #111; padding: 15px; border: 2px solid #333; font-weight: bold;")
         self.price_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.price_label)
 
+        # 中間區域：參數設定 + 帳戶監控
         mid_layout = QHBoxLayout()
         
-        param_group = QGroupBox("設定")
-        param_group.setStyleSheet("QGroupBox { font-weight: bold; border: 1px solid #555; margin-top: 10px; }")
-        form = QFormLayout(param_group)
+        # --- 通用設定區 ---
+        common_group = QGroupBox("商品與通用設定")
+        common_group.setStyleSheet("QGroupBox { font-weight: bold; border: 1px solid #555; }")
+        common_layout = QHBoxLayout(common_group)
         
         self.symbol_combo = QComboBox()
         self.symbol_combo.addItems(["TX00 (大台)", "MTX00 (小台)", "TM0000 (微台)"])
-        self.symbol_combo.setStyleSheet("background: #333; color: white; padding: 8px; font-size: 14px;")
+        self.symbol_combo.setStyleSheet("background: #333; color: white; padding: 5px;")
         self.symbol_combo.currentTextChanged.connect(self.change_market_subscription)
-        
-        self.ma_in = QLineEdit("5")  
-        self.qty_in = QLineEdit("1")
-        self.buffer_in = QLineEdit("0.1")
-        self.sl_in = QLineEdit("1.5")
-        self.ttp_trig_in = QLineEdit("2.0")
-        self.ttp_call_in = QLineEdit("0.5")
-        
-        form.addRow("交易商品:", self.symbol_combo)
-        form.addRow("MA 週期 (日):", self.ma_in)
-        form.addRow("下單口數 (Qty):", self.qty_in)
-        form.addRow("進場緩衝 %:", self.buffer_in)
-        form.addRow("固定停損 %:", self.sl_in)
-        form.addRow("移停觸發 %:", self.ttp_trig_in)
-        form.addRow("移停回撤 %:", self.ttp_call_in)
         
         self.update_kline_btn = QPushButton("手動下載 K 線 (TX00)")
         self.update_kline_btn.setStyleSheet("background-color: #2980b9; color: white; padding: 5px;")
         self.update_kline_btn.clicked.connect(self.manual_download)
-        form.addRow(self.update_kline_btn)
+        
+        common_layout.addWidget(QLabel("交易商品:"))
+        common_layout.addWidget(self.symbol_combo)
+        common_layout.addWidget(self.update_kline_btn)
+        mid_layout.addWidget(common_group)
 
-        mid_layout.addWidget(param_group, 1)
+        # --- 策略參數區 (左右兩欄) ---
+        strategy_layout = QHBoxLayout()
+        
+        # 左側：做多參數
+        long_group = QGroupBox("📈 做多參數 (Long)")
+        long_group.setStyleSheet("QGroupBox { font-weight: bold; border: 1px solid #e74c3c; margin-top: 10px; }")
+        long_form = QFormLayout(long_group)
+        self.long_ma = QLineEdit("5")
+        self.long_qty = QLineEdit("1")
+        self.long_buffer = QLineEdit("0.1")
+        self.long_sl = QLineEdit("1.5")
+        self.long_ttp_trig = QLineEdit("2.0")
+        self.long_ttp_call = QLineEdit("0.5")
+        
+        long_form.addRow("MA 週期:", self.long_ma)
+        long_form.addRow("口數 (Qty):", self.long_qty)
+        long_form.addRow("進場緩衝 %:", self.long_buffer)
+        long_form.addRow("固定停損 %:", self.long_sl)
+        long_form.addRow("移停觸發 %:", self.long_ttp_trig)
+        long_form.addRow("移停回撤 %:", self.long_ttp_call)
+        
+        # 右側：做空參數
+        short_group = QGroupBox("📉 做空參數 (Short)")
+        short_group.setStyleSheet("QGroupBox { font-weight: bold; border: 1px solid #2ecc71; margin-top: 10px; }")
+        short_form = QFormLayout(short_group)
+        self.short_ma = QLineEdit("5")
+        self.short_qty = QLineEdit("1")
+        self.short_buffer = QLineEdit("0.1")
+        self.short_sl = QLineEdit("1.5")
+        self.short_ttp_trig = QLineEdit("2.0")
+        self.short_ttp_call = QLineEdit("0.5")
 
+        short_form.addRow("MA 週期:", self.short_ma)
+        short_form.addRow("口數 (Qty):", self.short_qty)
+        short_form.addRow("進場緩衝 %:", self.short_buffer)
+        short_form.addRow("固定停損 %:", self.short_sl)
+        short_form.addRow("移停觸發 %:", self.short_ttp_trig)
+        short_form.addRow("移停回撤 %:", self.short_ttp_call)
+
+        strategy_layout.addWidget(long_group)
+        strategy_layout.addWidget(short_group)
+        mid_layout.addLayout(strategy_layout)
+
+        # --- 帳戶表格 ---
         table_group = QGroupBox("帳戶監控")
         table_group.setStyleSheet("QGroupBox { font-weight: bold; border: 1px solid #555; margin-top: 10px; }")
         tl = QVBoxLayout(table_group)
@@ -242,13 +275,14 @@ class MainWindow(QMainWindow):
         self.account_table.setStyleSheet("QTableWidget { background: #1a1a1a; color: #eee; } QHeaderView::section { background: #333; color: white; }")
         tl.addWidget(self.account_table)
         
-        mid_layout.addWidget(table_group, 2)
+        mid_layout.addWidget(table_group)
         layout.addLayout(mid_layout)
 
+        # Log
         self.log_box = QTextEdit()
         self.log_box.setReadOnly(True)
         self.log_box.setStyleSheet("background: #000; color: #0f0; font-family: Consolas; border: 1px solid #555;")
-        self.log_box.setFixedHeight(200)
+        self.log_box.setFixedHeight(150)
         layout.addWidget(self.log_box)
 
     def update_subscriptions(self):
@@ -301,20 +335,31 @@ class MainWindow(QMainWindow):
         self.append_log(f"✅ 發現帳號: {account}")
 
     def toggle_account_strategy(self, account, row):
-        # 注意：這裡不檢查 is_ready，因為我們允許斷線重連
         btn = self.account_table.cellWidget(row, 4)
         
         if self.workers[account] is None:
-            # --- 啟動流程 ---
+            # --- 啟動流程：打包參數 ---
             try:
+                long_params = {
+                    'ma': int(self.long_ma.text()), 
+                    'qty': int(self.long_qty.text()),
+                    'buffer': float(self.long_buffer.text()), 
+                    'sl': float(self.long_sl.text()),
+                    'ttp_trig': float(self.long_ttp_trig.text()), 
+                    'ttp_call': float(self.long_ttp_call.text())
+                }
+                short_params = {
+                    'ma': int(self.short_ma.text()), 
+                    'qty': int(self.short_qty.text()),
+                    'buffer': float(self.short_buffer.text()), 
+                    'sl': float(self.short_sl.text()),
+                    'ttp_trig': float(self.short_ttp_trig.text()), 
+                    'ttp_call': float(self.short_ttp_call.text())
+                }
                 params = {
-                    'ma': int(self.ma_in.text()), 
-                    'qty': int(self.qty_in.text()),
-                    'buffer': float(self.buffer_in.text()), 
-                    'sl': float(self.sl_in.text()),
-                    'ttp_trig': float(self.ttp_trig_in.text()), 
-                    'ttp_call': float(self.ttp_call_in.text()),
-                    'account': account
+                    'account': account,
+                    'long': long_params,
+                    'short': short_params
                 }
             except ValueError:
                 QMessageBox.critical(self, "錯誤", "參數格式有誤")
@@ -323,9 +368,8 @@ class MainWindow(QMainWindow):
             self.pending_account = account
             self.pending_row = row
             self.pending_params = params
-            self.pending_trade_symbol = self.current_symbol # 使用當前選單的商品作為交易目標
+            self.pending_trade_symbol = self.current_symbol 
             
-            # 強制下載 TX00 (大台)
             kline_target = "TX00"
             s_dt, e_dt = self.get_kline_date_range()
             
@@ -333,7 +377,6 @@ class MainWindow(QMainWindow):
             btn.setText("下載中...")
             btn.setEnabled(False)
             
-            # 使用 QThread 執行外部程式，避免 UI 卡死
             self.dl_thread = DownloadThread(s_dt, e_dt, kline_target)
             self.dl_thread.finished_signal.connect(self.on_download_finished)
             self.dl_thread.start()
@@ -352,7 +395,6 @@ class MainWindow(QMainWindow):
     def on_download_finished(self, success, msg):
         if not success:
             self.append_log(f"❌ 下載失敗: {msg}")
-            # 恢復按鈕
             if self.pending_row is not None:
                 btn = self.account_table.cellWidget(self.pending_row, 4)
                 btn.setText("啟動")
@@ -361,17 +403,14 @@ class MainWindow(QMainWindow):
         
         self.append_log("✅ K 線下載完成，正在恢復連線...")
         
-        # [關鍵步驟] 執行重新連線 (因為剛剛 subprocess 登入把我們踢掉了)
         if self.engine_thread and self.engine_thread.fetcher:
             self.engine_thread.fetcher.reconnect_quote()
             
-        # 讀取 CSV (這裡讀取 TX00)
         prices = self.read_csv_prices("TX00")
         if not prices:
              self.append_log("❌ 讀取 CSV 失敗")
              return
 
-        # 啟動 Worker
         self.finalize_start_worker(prices)
 
     def read_csv_prices(self, symbol):
@@ -414,7 +453,6 @@ class MainWindow(QMainWindow):
         self.append_log(f"▶️ 帳號 {account} 策略啟動 (目標:{trade_symbol})")
 
     def on_server_ready(self):
-        # 3003 訊號回來了，代表重連成功，重新訂閱
         self.is_ready = True
         self.append_log(">>> 連線已恢復，重新訂閱行情...")
         self.update_subscriptions()
@@ -445,7 +483,6 @@ class MainWindow(QMainWindow):
             today_str = now.strftime("%Y%m%d")
             if self.last_auto_update != today_str:
                 self.append_log(f"⏰ 執行換日下載...")
-                # 這裡也要用 Thread 下載，不然會卡 UI
                 s_dt, e_dt = self.get_kline_date_range()
                 self.dl_thread = DownloadThread(s_dt, e_dt, "TX00")
                 self.dl_thread.finished_signal.connect(self.daily_reload_finished)

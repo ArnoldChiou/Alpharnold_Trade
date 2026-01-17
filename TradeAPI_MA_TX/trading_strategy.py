@@ -18,20 +18,27 @@ class TradingWorker(QObject):
         self.order = order_obj
         self.params = params
         self.symbol = symbol
+
+        # 分離多空參數
+        self.long_p = params['long']
+        self.short_p = params['short']
+
+        # 決定需要保留的最大歷史長度
+        self.max_ma_len = max(self.long_p['ma'], self.short_p['ma'])
         
         # 唯一的狀態檔案路徑 (使用帳號作為檔名)
         self.state_file = os.path.join(STATE_FOLDER, f"{params['account']}_{symbol}.json")
         
         self.history_prices = [] 
-        self.ma_len = params.get('ma', 5)
-        self.current_ma = 0.0
+        self.current_ma_long = 0.0
+        self.current_ma_short = 0.0
         self.history_ready = False
 
-        # 交易狀態 (將會從檔案讀取)
+        # 交易狀態
         self.in_position = False
-        self.current_side = None
+        self.current_side = None # "BUY" (做多) 或 "SELL" (做空)
         self.entry_price = 0.0
-        self.extreme_price = 0.0
+        self.best_price = 0.0 # 多單為最高價，空單為最低價
         self.ttp_active = False
         
         # 初始化時載入狀態
@@ -39,11 +46,17 @@ class TradingWorker(QObject):
 
     def add_history(self, close_price, is_history=False):
         self.history_prices.append(close_price)
-        if len(self.history_prices) > self.ma_len:
+        if len(self.history_prices) > self.max_ma_len:
             self.history_prices.pop(0)
-        if len(self.history_prices) >= self.ma_len:
-            ma_val = sum(self.history_prices) / self.ma_len
-            self.current_ma = round(ma_val, 2)
+            
+        # 計算兩條 MA
+        if len(self.history_prices) >= self.long_p['ma']:
+            sub_list = self.history_prices[-self.long_p['ma']:]
+            self.current_ma_long = round(sum(sub_list) / len(sub_list), 2)
+            
+        if len(self.history_prices) >= self.short_p['ma']:
+            sub_list = self.history_prices[-self.short_p['ma']:]
+            self.current_ma_short = round(sum(sub_list) / len(sub_list), 2)
 
     def reload_history(self, new_prices):
         self.history_prices = []
@@ -53,112 +66,155 @@ class TradingWorker(QObject):
         self.report_status()
 
     def report_status(self):
-        if len(self.history_prices) < self.ma_len:
+        if len(self.history_prices) < self.max_ma_len:
             return
             
-        buffer_val = self.params.get('buffer', 0.1)
-        threshold = self.current_ma * (1 + buffer_val / 100)
+        long_thresh = self.current_ma_long * (1 + self.long_p['buffer'] / 100)
+        short_thresh = self.current_ma_short * (1 - self.short_p['buffer'] / 100)
         
         msg = (
-            f"均線更新 MA({self.ma_len}): {self.current_ma:.2f} | 門檻: {threshold:.2f}"
+            f"MAL({self.long_p['ma']}):{self.current_ma_long:.0f} (多:{long_thresh:.0f}) | "
+            f"MAS({self.short_p['ma']}):{self.current_ma_short:.0f} (空:{short_thresh:.0f})"
         )
         self.log_signal.emit(msg)
         self.history_ready = True
         
-        # 若目前有倉位，發送狀態到表格
         if self.in_position:
-            self.status_signal.emit(f"{'多' if self.current_side=='BUY' else '空'} @ {self.entry_price}")
+            side_text = '多' if self.current_side=='BUY' else '空'
+            self.status_signal.emit(f"{side_text} @ {self.entry_price}")
 
     def process_quote(self, price):
         if not self.history_ready:
             return 
 
         if not self.in_position:
-            # 簡單策略：只做多範例 (若需做空請自行還原)
-            buffer_val = self.params.get('buffer', 0.1)
-            static_threshold = self.current_ma * (1 + buffer_val / 100)
-            
-            if price >= static_threshold:
-                # --- [新增] 追價保護機制 ---
-                # 如果目前價格超過 觸發價 + 5 點，則視為乖離過大，暫不進場
-                max_slippage = 5.0
-                if price > (static_threshold + max_slippage):
-                    # [已啟用] 價格過高時發送警告
-                    self.log_signal.emit(f"⚠️ 價格過高 ({price})！已高於預計進場價 {static_threshold:.0f}，放棄追價")
-                    self.log_signal.emit(f"預計回到 {static_threshold + max_slippage:.0f} 附近再進場")
-                    return
-
-                self.execute_order("BUY", price)
+            self.check_entry(price)
         else:
-            self.manage_exit(price)
+            if self.current_side == "BUY":
+                self.manage_long_exit(price)
+            elif self.current_side == "SELL":
+                self.manage_short_exit(price)
 
-    def execute_order(self, side, price):
-        # 每次下單前驗證憑證
+    def check_entry(self, price):
+        # --- 判斷做多 ---
+        long_thresh = self.current_ma_long * (1 + self.long_p['buffer'] / 100)
+        if price >= long_thresh:
+            if self.check_slippage(price, long_thresh, "BUY"):
+                self.execute_order("BUY", price, self.long_p['qty'])
+            return
+
+        # --- 判斷做空 ---
+        short_thresh = self.current_ma_short * (1 - self.short_p['buffer'] / 100)
+        if price <= short_thresh:
+            if self.check_slippage(price, short_thresh, "SELL"):
+                self.execute_order("SELL", price, self.short_p['qty'])
+            return
+
+    def check_slippage(self, price, target_price, side):
+        max_slippage = 5.0
+        # 做多：價格遠高於目標價 -> 不追
+        if side == "BUY" and price > (target_price + max_slippage):
+            self.log_signal.emit(f"⚠️ 價格過高 ({price})！高於進場價 {target_price:.0f}，放棄追多")
+            return False
+        # 做空：價格遠低於目標價 -> 不追
+        if side == "SELL" and price < (target_price - max_slippage):
+            self.log_signal.emit(f"⚠️ 價格過低 ({price})！低於進場價 {target_price:.0f}，放棄追空")
+            return False
+        return True
+
+    def execute_order(self, side, price, qty):
         self.order.ReadCertByID(config.USER_ID)
         
         pOrder = sk.FUTUREORDER()
-        pOrder.bstrFullAccount = self.params['account'] # 這裡會自動填入正確的子帳號
+        pOrder.bstrFullAccount = self.params['account']
         pOrder.bstrStockNo = self.symbol
         pOrder.sBuySell = 0 if side == "BUY" else 1
         pOrder.sTradeType = 0 
-        pOrder.sNewClose = 0  
+        pOrder.sNewClose = 0 
         pOrder.bstrPrice = str(int(price))
-        pOrder.nQty = int(self.params['qty'])
+        pOrder.nQty = int(qty)
 
         res = self.order.SendFutureOrderCLR(config.USER_ID, False, pOrder)
-        self.log_signal.emit(f"🚀 {side} 指令發送：{price} | API: {res}")
+        self.log_signal.emit(f"🚀 {side} 指令發送：{price} (Qty:{qty}) | API: {res}")
         
-        if side == "BUY":
+        # 進入倉位狀態
+        # 若原本無倉位 -> 建立新倉位
+        if not self.in_position:
             self.in_position = True
             self.current_side = side
             self.entry_price = price
-            self.extreme_price = price
-            self.status_signal.emit(f"多 @ {price}")
+            self.best_price = price # 多:最高, 空:最低
+            self.status_signal.emit(f"{'多' if side=='BUY' else '空'} @ {price}")
         else:
-            # 平倉 (SELL)
+            # 原本有倉位 -> 視為平倉 (假設反向單即平倉)
             self.in_position = False
             self.ttp_active = False
             self.entry_price = 0.0
-            self.extreme_price = 0.0
+            self.best_price = 0.0
             self.status_signal.emit("---")
             
-        # 下單後立即存檔
         self.save_state()
 
-    def manage_exit(self, price):
-        # 1. 固定停損
-        if price <= self.entry_price * (1 - self.params['sl'] / 100):
-            self.log_signal.emit(f"🚩 觸發停損：{price}")
-            self.execute_order("SELL", price)
+    def manage_long_exit(self, price):
+        # 1. 固定停損 (價格下跌)
+        sl_price = self.entry_price * (1 - self.long_p['sl'] / 100)
+        if price <= sl_price:
+            self.log_signal.emit(f"🚩 多單停損觸發：{price}")
+            self.execute_order("SELL", price, self.long_p['qty'])
             return
         
         # 更新最高價
-        if price > self.extreme_price: 
-            self.extreme_price = price
-            # 發生變動時也存一下比較保險
+        if price > self.best_price: 
+            self.best_price = price
             self.save_state()
 
-        # 2. 移動停利
-        ttp_trig_p = self.entry_price * (1 + self.params['ttp_trig'] / 100)
+        # 2. 移動停利 (價格回檔)
+        ttp_trig_p = self.entry_price * (1 + self.long_p['ttp_trig'] / 100)
         if not self.ttp_active and price >= ttp_trig_p:
             self.ttp_active = True
-            self.log_signal.emit(f"🎯 移動停利啟動")
+            self.log_signal.emit(f"🎯 多單移停啟動")
             self.save_state()
 
-        # 3. 回撤平倉
         if self.ttp_active:
-            retrace_p = self.extreme_price * (1 - self.params['ttp_call'] / 100)
+            retrace_p = self.best_price * (1 - self.long_p['ttp_call'] / 100)
             if price <= retrace_p:
-                self.log_signal.emit(f"💰 獲利回撤平倉：{price}")
-                self.execute_order("SELL", price)
+                self.log_signal.emit(f"💰 多單獲利回撤平倉：{price}")
+                self.execute_order("SELL", price, self.long_p['qty'])
+
+    def manage_short_exit(self, price):
+        # 1. 固定停損 (價格上漲)
+        sl_price = self.entry_price * (1 + self.short_p['sl'] / 100)
+        if price >= sl_price:
+            self.log_signal.emit(f"🚩 空單停損觸發：{price}")
+            self.execute_order("BUY", price, self.short_p['qty'])
+            return
+        
+        # 更新最低價
+        if price < self.best_price: 
+            self.best_price = price
+            self.save_state()
+
+        # 2. 移動停利 (價格反彈)
+        # 空單獲利是價格下跌，觸發點為 價格 <= 進場 * (1 - %)
+        ttp_trig_p = self.entry_price * (1 - self.short_p['ttp_trig'] / 100)
+        if not self.ttp_active and price <= ttp_trig_p:
+            self.ttp_active = True
+            self.log_signal.emit(f"🎯 空單移停啟動")
+            self.save_state()
+
+        if self.ttp_active:
+            # 回撤是價格上漲，回撤點為 最低價 * (1 + %)
+            retrace_p = self.best_price * (1 + self.short_p['ttp_call'] / 100)
+            if price >= retrace_p:
+                self.log_signal.emit(f"💰 空單獲利反彈平倉：{price}")
+                self.execute_order("BUY", price, self.short_p['qty'])
 
     def save_state(self):
-        """ 將當前倉位狀態寫入 JSON """
         state = {
             "in_position": self.in_position,
             "current_side": self.current_side,
             "entry_price": self.entry_price,
-            "extreme_price": self.extreme_price,
+            "best_price": self.best_price,
             "ttp_active": self.ttp_active
         }
         try:
@@ -168,7 +224,6 @@ class TradingWorker(QObject):
             print(f"存檔失敗: {e}")
 
     def load_state(self):
-        """ 啟動時讀取 JSON """
         if os.path.exists(self.state_file):
             try:
                 with open(self.state_file, "r") as f:
@@ -176,10 +231,13 @@ class TradingWorker(QObject):
                     self.in_position = state.get("in_position", False)
                     self.current_side = state.get("current_side", None)
                     self.entry_price = state.get("entry_price", 0.0)
-                    self.extreme_price = state.get("extreme_price", 0.0)
+                    self.best_price = state.get("best_price", 0.0) # 相容舊版 extreme_price
+                    if self.best_price == 0.0:
+                         self.best_price = state.get("extreme_price", 0.0)
                     self.ttp_active = state.get("ttp_active", False)
                     
                     if self.in_position:
-                        self.status_signal.emit(f"接管: {self.current_side} @ {self.entry_price}")
+                        side_text = '多' if self.current_side=='BUY' else '空'
+                        self.status_signal.emit(f"接管: {side_text} @ {self.entry_price}")
             except Exception as e:
                 self.log_signal.emit(f"⚠️ 讀取狀態失敗: {e}")
