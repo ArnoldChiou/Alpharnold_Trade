@@ -6,7 +6,7 @@ from main_ui import MainWindow, LoginDialog
 import tkinter as tk
 
 if __name__ == "__main__":
-    # 1. 建立隱藏的 Tkinter 視窗跑訊息泵 (避免某些元件報錯)
+    # 1. 建立隱藏的 Tkinter 視窗跑訊息泵 (避免某些 SKCOM 元件報錯)
     temp_root = tk.Tk()
     temp_root.withdraw()
 
@@ -15,14 +15,14 @@ if __name__ == "__main__":
     app.setStyle("Fusion")
     
     # --- 先跳出登入視窗 ---
-    # 這一步很重要，它會讓你在介面上輸入帳密，並存入 credentials.json
+    # 這一步會讓你在介面上輸入帳密，並存入 credentials.json
     login = LoginDialog()
     if login.exec() == QDialog.Accepted:
         # 登入成功才開啟主視窗
         window = MainWindow()
         window.show()
 
-        # 3. 定時器：驅動群益 API 事件
+        # 3. 定時器：驅動群益 API 事件 pump
         timer = QTimer()
         timer.timeout.connect(lambda: comtypes.client.PumpEvents(0.005))
         timer.start(10)

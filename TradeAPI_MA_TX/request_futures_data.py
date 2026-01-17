@@ -79,8 +79,10 @@ class QuoteFetcher:
         self.m_pSKCenter.SKCenterLib_SetAuthority(0) # 正式環境
 
         # B. 登入
-        print(f"步驟 1: 執行登入 ({USER_ID})...")
-        login_res = self.m_pSKCenter.SKCenterLib_Login(USER_ID, USER_PASS)
+        current_id = config.USER_ID
+        current_pass = config.USER_PASS
+        print(f"步驟 1: 執行登入 ({current_id})...")
+        login_res = self.m_pSKCenter.SKCenterLib_Login(current_id, current_pass)
         if handle_code(login_res) != 0:
             print(f"登入失敗: {self.m_pSKCenter.SKCenterLib_GetReturnCodeMessage(handle_code(login_res))}")
             return

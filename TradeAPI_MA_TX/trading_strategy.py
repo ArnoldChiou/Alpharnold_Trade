@@ -79,6 +79,15 @@ class TradingWorker(QObject):
             static_threshold = self.current_ma * (1 + buffer_val / 100)
             
             if price >= static_threshold:
+                # --- [新增] 追價保護機制 ---
+                # 如果目前價格超過 觸發價 + 5 點，則視為乖離過大，暫不進場
+                max_slippage = 5.0
+                if price > (static_threshold + max_slippage):
+                    # [已啟用] 價格過高時發送警告
+                    self.log_signal.emit(f"⚠️ 價格過高 ({price})！已高於預計進場價 {static_threshold:.0f}，放棄追價")
+                    self.log_signal.emit(f"預計回到 {static_threshold + max_slippage:.0f} 附近再進場")
+                    return
+
                 self.execute_order("BUY", price)
         else:
             self.manage_exit(price)
